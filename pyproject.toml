@@ -1,0 +1,22 @@
+[project]
+authors = [{name = "Tyler Shoemaker", email = "69219954+t-shoemaker@users.noreply.github.com"}]
+dependencies = [] 
+name = "treetok"
+requires-python = ">= 3.11"
+version = "0.1.0"
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["osx-arm64"]
+
+[tool.pixi.pypi-dependencies]
+treetok = { path = ".", editable = true }
+numpy = ">=2.4.2,<3"
+transformers = ">=5.1.0,<6"
+rapidfuzz = ">=3.14.3,<4"
+
+[tool.pixi.tasks]
