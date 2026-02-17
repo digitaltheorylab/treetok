@@ -116,14 +116,18 @@ class TokenClusterer:
         uf = _UnionFind(self.vocab_size)
 
         for idx in range(self.vocab_size):
-            for neigh in self._search_neighbors(idx):
-                uf.union(idx, neigh)
+            neighbors = sorted(self._search_neighbors(idx))
+            for neigh in neighbors:
+                # Avoid doing each undirected edge twice
+                if neigh > idx:
+                    uf.union(idx, neigh)
 
         groups = defaultdict(list)
         for idx in range(self.vocab_size):
             groups[uf.find(idx)].append(idx)
 
         self.clusters = [g for g in groups.values() if len(g) >= 2]
+
         return self.clusters
 
     def get_cluster_info(self):
