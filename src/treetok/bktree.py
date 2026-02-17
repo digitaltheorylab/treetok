@@ -71,7 +71,9 @@ class _FlatBKTree:
         tok = normalized_tokens[idx]
         node = self.root
         while True:
-            d = Levenshtein.distance(tok, normalized_tokens[node])
+            d = bounded_levenshtein(
+                tok, normalized_tokens[node], self.max_edge
+            )
             if d > self.max_edge:
                 return
 
