@@ -15,8 +15,6 @@ def main(argv=None):
     parser.add_argument(
         "model",
         type=str,
-        nargs="?",
-        default=None,
         help="HuggingFace model name",
     )
     parser.add_argument(
