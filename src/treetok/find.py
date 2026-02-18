@@ -8,7 +8,9 @@ from transformers import AutoTokenizer
 from .clusterer import TokenClusterer
 
 
-def find_token_clusters(name, max_distance=2, normalize_fn=None, top_k=None):
+def find_token_clusters(
+    name, max_distance=2, normalize_fn=None, top_k=None, n_jobs=1
+):
     """Load a tokenizer and cluster its vocabulary.
 
     Parameters
@@ -21,6 +23,9 @@ def find_token_clusters(name, max_distance=2, normalize_fn=None, top_k=None):
         Normalization function
     top_k : int or None
         If set, only return `top_k` largest clusters
+    n_jobs : int
+        Number of parallel jobs. 1 means to parallelization; -1 uses all
+        available CPUs (requires 'fork')
 
     Returns
     -------
@@ -34,7 +39,9 @@ def find_token_clusters(name, max_distance=2, normalize_fn=None, top_k=None):
     vocab = [t for t, _ in vocab_items]
     token_ids = [i for _, i in vocab_items]
 
-    bktree = TokenClusterer(vocab, token_ids, normalize_fn, max_distance)
+    bktree = TokenClusterer(
+        vocab, token_ids, normalize_fn, max_distance, n_jobs
+    )
     bktree.cluster()
 
     info = bktree.get_cluster_info()

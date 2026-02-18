@@ -38,6 +38,13 @@ def main(argv=None):
         default=None,
         help="Output JSON file path for cluster results",
     )
+    parser.add_argument(
+        "-j",
+        "--n-jobs",
+        type=int,
+        default=4,
+        help="Number of workers for parallelism",
+    )
 
     args = parser.parse_args()
 
@@ -46,6 +53,7 @@ def main(argv=None):
         max_distance=args.max_distance,
         normalize_fn=None,
         top_k=args.top_k,
+        n_jobs=args.n_jobs,
     )
 
     print_clusters(clusters)
