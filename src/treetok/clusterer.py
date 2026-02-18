@@ -1,11 +1,145 @@
 """Token clusterer."""
 
+import sys
 import unicodedata
+import warnings
 from collections import Counter, defaultdict
+import multiprocessing as mp
 
 import numpy as np
 
 from .bktree import _FlatBKTree, _UnionFind
+
+
+def _supports_fork():
+    """Check if the platform supports fork-based multiprocessing.
+
+    Returns
+    -------
+    bool
+        True if fork is available and safe to use
+    """
+    # Windows won't support
+    if sys.platform == "win32":
+        return False
+
+    # Check if fork is available in multiprocessing
+    if not hasattr(mp, "get_start_method"):
+        return False
+
+    # Check available start methods
+    try:
+        methods = mp.get_all_start_methods()
+        return "fork" in methods
+    except Exception:
+        return False
+
+
+def _search_neighbors_core(
+    idx,
+    normalized,
+    norm_len,
+    prefix_marker,
+    trees,
+    strata_normalized,
+    strata,
+    global_to_local,
+    max_distance,
+    min_cluster_length,
+):
+    """Core neighbor search.
+
+    Parameters
+    ----------
+    idx : int
+        Global vocabulary index
+    normalized : list[str]
+        Normalized tokens
+    norm_len : np.ndarray
+        Token lengths
+    prefix_marker : list[str]
+        Prefix markers per token
+    trees : dict
+        BK-trees per stratum
+    strata : dict
+        Global indices per stratum
+    global_to_local : list
+        Mapping from global to (key, local) indices
+    max_distance : int
+        Maximum Levenshtein distance
+    min_cluster_length : int
+        Minimum token length for clustering
+
+    Returns
+    -------
+    list[int]
+        Global indices of neighbor tokens
+    """
+    tok = normalized[idx]
+    tok_len = norm_len[idx]
+    marker = prefix_marker[idx]
+
+    # Compute effective max distance
+    if tok_len < min_cluster_length:
+        max_dist = 0
+    else:
+        max_dist = min(max_distance, tok_len // 2)
+
+    if max_dist == 0:
+        return []
+
+    neighbors = []
+    for offset in range(-max_dist, max_dist + 1):
+        key = (marker, tok_len + offset)
+        tree = trees.get(key)
+        if tree is None:
+            continue
+
+        norms = strata_normalized[key]
+        members = strata[key]
+
+        query_local = (
+            global_to_local[idx][1] if key == global_to_local[idx][0] else -1
+        )
+
+        for h in tree.search(tok, query_local, max_dist, norms):
+            neighbors.append(members[h])
+
+    return neighbors
+
+
+def _search_neighbors_batch(args):
+    """Worker function for parallel neighbor search.
+
+    Parameters
+    ----------
+    args : tuple
+        Start index, end index, clusterer data
+
+    Returns
+    -------
+    list[tuple[int, list[int]]]
+        List of (idx, neighbors) tuples for indices in range
+    """
+    start, end, data = args
+
+    results = []
+    for idx in range(start, end):
+        neighbors = _search_neighbors_core(
+            idx,
+            data["normalized"],
+            data["norm_len"],
+            data["prefix_marker"],
+            data["trees"],
+            data["strata_normalized"],
+            data["strata"],
+            data["global_to_local"],
+            data["max_distance"],
+            data["min_cluster_length"],
+        )
+        results.append((idx, neighbors))
+
+    return results
 
 
 class TokenClusterer:
@@ -18,13 +152,15 @@ class TokenClusterer:
     - The length constraint is enforced by querying only adjacent length bands
     - Each individual tree is small
 
-    Clustering uses union-find
+    Clustering uses union-find with optional multiprocessing support.
     """
 
     # Minimum token length (after normalization) to be eligible for clustering
     MIN_CLUSTER_LENGTH = 3
 
-    def __init__(self, vocab, ids=None, normalize_fn=None, max_distance=1):
+    def __init__(
+        self, vocab, ids=None, normalize_fn=None, max_distance=1, n_jobs=1
+    ):
         """Initialize the clusterer.
 
         Parameters
@@ -38,6 +174,9 @@ class TokenClusterer:
             NFKC + strip
         max_distance : int
             Maximum Levenshtein distance for clustering
+        n_jobs : int
+            Number of parallel jobs. 1 means no parallelization; -1 uses all
+            available CPUs (requires 'fork')
         """
         self.vocab = list(vocab)
         self.vocab_size = len(vocab)
@@ -48,6 +187,16 @@ class TokenClusterer:
         fn = self._basic_normalize if normalize_fn is None else normalize_fn
         self.normalize_fn = fn
         self.max_distance = max_distance
+
+        # Multiprocessing configuration
+        self.n_jobs = n_jobs
+        self._use_fork = _supports_fork() and n_jobs != 1
+        if not _supports_fork() and n_jobs not in (0, 1):
+            warnings.warn(
+                "Fork-based multiprocessing not available on this platform. "
+                "Falling back to single-threaded execution.",
+                RuntimeWarning,
+            )
 
         # Precompute normalized forms and their lengths
         self.normalized = [self.normalize_fn(t) for t in vocab]
@@ -115,8 +264,15 @@ class TokenClusterer:
 
         uf = _UnionFind(self.vocab_size)
 
-        for idx in range(self.vocab_size):
-            neighbors = sorted(self._search_neighbors(idx))
+        # Are we doing parallel or sequential neighbor search?
+        if self._use_fork and self.vocab_size > 100:
+            found = self._search_all_neighbors_parallel()
+        else:
+            found = self._search_all_neighbors_sequential()
+
+        # Union-find merging
+        for idx, neighbors in found:
+            neighbors = sorted(neighbors)
             for neigh in neighbors:
                 # Avoid doing each undirected edge twice
                 if neigh > idx:
@@ -129,6 +285,89 @@ class TokenClusterer:
         self.clusters = [g for g in groups.values() if len(g) >= 2]
 
         return self.clusters
+
+    def _search_all_neighbors_sequential(self):
+        """Sequential neighbor search.
+
+        Returns
+        -------
+        list[tuple[int, list[int]]]
+            Global vocabulary index and its list of neighbors
+        """
+        results = []
+        for idx in range(self.vocab_size):
+            neighbors = self._search_neighbors(idx)
+            results.append((idx, neighbors))
+
+        return results
+
+    def _search_all_neighbors_parallel(self):
+        """Parallel neighbor search using fork.
+
+        Returns
+        -------
+        list[tuple[int, list[int]]]
+            Global vocabulary index and its list of neighbors
+        """
+        n_workers = self.n_jobs if self.n_jobs > 0 else mp.cpu_count()
+        n_workers = min(n_workers, self.vocab_size)
+
+        data = {
+            "normalized": self.normalized,
+            "norm_len": self.norm_len,
+            "prefix_marker": self.prefix_marker,
+            "trees": self._trees,
+            "strata": dict(self._strata),
+            "strata_normalized": dict(self._strata_normalized),
+            "global_to_local": self._global_to_local,
+            "max_distance": self.max_distance,
+            "min_cluster_length": self.MIN_CLUSTER_LENGTH,
+        }
+
+        # Split into chunks
+        chunk_size = max(1, self.vocab_size // n_workers)
+        work_items = []
+        for idx in range(0, self.vocab_size, chunk_size):
+            end = min(idx + chunk_size, self.vocab_size)
+            work_items.append((idx, end, data))
+
+        # Execute in parallel with fork
+        ctx = mp.get_context("fork")
+        with ctx.Pool(processes=n_workers) as pool:
+            chunks = pool.map(_search_neighbors_batch, work_items)
+
+        # Flatten and return
+        results = []
+        for chunk in chunks:
+            results.extend(chunk)
+
+        return results
+
+    def _search_neighbors(self, idx):
+        """Return global indices of all neighbors of `idx`.
+
+        Parameters
+        ----------
+        idx : int
+            Global vocabulary index
+
+        Returns
+        -------
+        list[int]
+            Global indices of neighbor tokens
+        """
+        return _search_neighbors_core(
+            idx,
+            self.normalized,
+            self.norm_len,
+            self.prefix_marker,
+            self._trees,
+            self._strata_normalized,
+            self._strata,
+            self._global_to_local,
+            self.max_distance,
+            self.MIN_CLUSTER_LENGTH,
+        )
 
     def get_cluster_info(self):
         """Return cluster metadata sorted by descending size.
@@ -159,76 +398,6 @@ class TokenClusterer:
             )
 
         return sorted(info, key=lambda x: x["count"], reverse=True)
-
-    def _effective_max_distance(self, tok_len):
-        """Return the effective max edit distance for a given token length.
-
-        Short tokens get a tighter (or zero) threshold to prevent spurious
-        clusters:
-
-        - Below `MIN_CLUSTER_LENGTH`: 0 (skip; no clustering)
-        - Otherwise: `min(max_distance, tok_len // 2)` so that the
-          allowed edits never exceed half the token length
-
-        Parameters
-        ----------
-        tok_len : int
-            Length of the normalized token
-
-        Returns
-        -------
-        int
-            Effective maximum Levenshtein distance
-        """
-        if tok_len < self.MIN_CLUSTER_LENGTH:
-            return 0
-
-        return min(self.max_distance, tok_len // 2)
-
-    def _search_neighbors(self, idx):
-        """Return global indices of all neighbors of `idx`.
-
-        Searches the token's own stratum plus strata at adjacent lengths
-        (within `max_distance`) that share the same prefix marker
-
-        Parameters
-        ----------
-        idx : int
-            Global vocabulary index
-
-        Returns
-        -------
-        list[int]
-            Global indices of neighbor tokens
-        """
-        tok = self.normalized[idx]
-        tok_len = int(self.norm_len[idx])
-        marker = self.prefix_marker[idx]
-
-        max_dist = self._effective_max_distance(tok_len)
-        if max_dist == 0:
-            return []
-
-        neighbors = []
-        for offset in range(-max_dist, max_dist + 1):
-            key = (marker, tok_len + offset)
-            tree = self._trees.get(key)
-            if tree is None:
-                continue
-
-            norms = self._strata_normalized[key]
-            members = self._strata[key]
-
-            query_local = (
-                self._global_to_local[idx][1]
-                if key == self._global_to_local[idx][0]
-                else -1
-            )
-
-            for h in tree.search(tok, query_local, max_dist, norms):
-                neighbors.append(members[h])
-
-        return neighbors
 
     @staticmethod
     def _assign_prefix_marker(normalized_tok, markers):
