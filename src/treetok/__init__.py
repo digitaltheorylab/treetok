@@ -1,4 +1,15 @@
 from .clusterer import TokenClusterer
-from .find import find_token_clusters, print_clusters
+from .find import (
+    cluster_vocab,
+    load_hf_vocab,
+    print_clusters,
+    save_clusters,
+)
 
-__all__ = ["TokenClusterer", "find_token_clusters", "print_clusters"]
+__all__ = [
+    "TokenClusterer",
+    "cluster_vocab",
+    "load_hf_vocab",
+    "print_clusters",
+    "save_clusters",
+]

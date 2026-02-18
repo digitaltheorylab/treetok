@@ -6,15 +6,22 @@ from pathlib import Path
 from .clusterer import TokenClusterer
 
 
-def find_token_clusters(
-    name, max_distance=2, normalize_fn=None, top_k=None, n_jobs=1
+def cluster_vocab(
+    vocab,
+    token_ids=None,
+    max_distance=2,
+    normalize_fn=None,
+    top_k=None,
+    n_jobs=1,
 ):
-    """Load a tokenizer and cluster its vocabulary.
+    """Cluster tokenizer vocabulary.
 
     Parameters
     ----------
-    name : str
-        Model identifier
+    vocab : sequence[str]
+        Tokenizer vocabulary
+    token_ids : sequence[int] or None
+        Token IDs
     max_distance : int
         Levenshtein distance threshold for clustering
     normalize_fn : callable or None
@@ -30,25 +37,54 @@ def find_token_clusters(
     list[dict]
         List of cluster info dictionaries, sorted by cluster size
     """
-    from transformers import AutoTokenizer
+    if token_ids is None:
+        token_ids = list(range(len(vocab)))
 
-    tokenizer = AutoTokenizer.from_pretrained(name)
-
-    vocab_dict = tokenizer.get_vocab()
-    vocab_items = sorted(vocab_dict.items(), key=lambda kv: kv[1])
-    vocab = [t for t, _ in vocab_items]
-    token_ids = [i for _, i in vocab_items]
-
-    bktree = TokenClusterer(
+    clusterer = TokenClusterer(
         vocab, token_ids, normalize_fn, max_distance, n_jobs
     )
-    bktree.cluster()
+    clusterer.cluster()
 
-    info = bktree.get_cluster_info()
+    info = clusterer.get_cluster_info()
     if top_k is not None:
         info = info[:top_k]
 
     return info
+
+
+def load_hf_vocab(model_name):
+    """Load vocab and token IDs from a HuggingFace tokenizer.
+
+    Parameters
+    ----------
+    model_name : str
+        Tokenizer's model name
+
+    Returns
+    -------
+    tuple[list[str], list[int]]
+        Vocab and token IDs
+
+    Raises
+    ------
+    ImportError
+        If `transformers` isn't available
+    """
+    try:
+        from transformers import AutoTokenizer
+    except ImportError as e:
+        raise ImportError(
+            "HuggingFace support requires the optional dependency "
+            "transformers'. Install it separately or use the pixi "
+            "'huggingface' environment"
+        ) from e
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    vocab_dict = sorted(tokenizer.get_vocab().items(), key=lambda x: x[1])
+    vocab = [t for t, _ in vocab_dict]
+    token_ids = [idx for _, idx in vocab_dict]
+
+    return vocab, token_ids
 
 
 def print_clusters(clusters, max_tokens_per_cluster=10):

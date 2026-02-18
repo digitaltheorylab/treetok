@@ -4,7 +4,7 @@
 import argparse
 from pathlib import Path
 
-from .find import find_token_clusters, print_clusters, save_clusters
+from .find import cluster_vocab, load_hf_vocab, print_clusters, save_clusters
 
 
 def main(argv=None):
@@ -48,10 +48,11 @@ def main(argv=None):
 
     args = parser.parse_args()
 
-    clusters = find_token_clusters(
-        args.model,
+    vocab, token_ids = load_hf_vocab(args.model)
+    clusters = cluster_vocab(
+        vocab,
+        token_ids,
         max_distance=args.max_distance,
-        normalize_fn=None,
         top_k=args.top_k,
         n_jobs=args.n_jobs,
     )
