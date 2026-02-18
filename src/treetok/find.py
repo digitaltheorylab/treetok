@@ -24,8 +24,8 @@ def find_token_clusters(
     top_k : int or None
         If set, only return `top_k` largest clusters
     n_jobs : int
-        Number of parallel jobs. 1 means to parallelization; -1 uses all
-        available CPUs (requires 'fork')
+        Number of worker processes. If > 0, use exactly that many workers. If
+        <= 0, use all available CPUs
 
     Returns
     -------

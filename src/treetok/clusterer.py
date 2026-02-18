@@ -1,40 +1,13 @@
 """Token clusterer."""
 
-import sys
 import unicodedata
 import warnings
 from collections import Counter, defaultdict
-import multiprocessing as mp
 
 import numpy as np
 
 from .bktree import _FlatBKTree, _UnionFind
-
-_WORKER_DATA = None
-
-
-def _supports_fork():
-    """Check if the platform supports fork-based multiprocessing.
-
-    Returns
-    -------
-    bool
-        True if fork is available and safe to use
-    """
-    # Windows won't support
-    if sys.platform == "win32":
-        return False
-
-    # Check if fork is available in multiprocessing
-    if not hasattr(mp, "get_start_method"):
-        return False
-
-    # Check available start methods
-    try:
-        methods = mp.get_all_start_methods()
-        return "fork" in methods
-    except Exception:
-        return False
+from . import parallel
 
 
 def _search_neighbors_core(
@@ -110,53 +83,6 @@ def _search_neighbors_core(
     return neighbors
 
 
-def _init_worker(data):
-    """Initialize a worker.
-
-    Parameters
-    ----------
-    data : dict
-        Clusterer data
-    """
-    global _WORKER_DATA
-    _WORKER_DATA = data
-
-
-def _search_neighbors_batch(args):
-    """Worker function for parallel neighbor search.
-
-    Parameters
-    ----------
-    args : tuple[int]
-        Start index and end indices
-
-    Returns
-    -------
-    list[tuple[int, list[int]]]
-        List of (idx, neighbors) tuples for indices in range
-    """
-    start, end = args
-    data = _WORKER_DATA
-
-    results = []
-    for idx in range(start, end):
-        neighbors = _search_neighbors_core(
-            idx,
-            data["normalized"],
-            data["norm_len"],
-            data["prefix_marker"],
-            data["trees"],
-            data["strata_normalized"],
-            data["strata"],
-            data["global_to_local"],
-            data["max_distance"],
-            data["min_cluster_length"],
-        )
-        results.append((idx, neighbors))
-
-    return results
-
-
 class TokenClusterer:
     """Cluster transformer-tokenizer tokens by Levenshtein distance.
 
@@ -190,8 +116,8 @@ class TokenClusterer:
         max_distance : int
             Maximum Levenshtein distance for clustering
         n_jobs : int
-            Number of parallel jobs. 1 means no parallelization; -1 uses all
-            available CPUs (requires 'fork')
+            Number of worker processes. If > 0, use exactly that many workers.
+            If <= 0, use all available CPUs
         """
         self.vocab = list(vocab)
         self.vocab_size = len(vocab)
@@ -204,7 +130,7 @@ class TokenClusterer:
         self.max_distance = max_distance
 
         # Multiprocessing configuration
-        fork_ok = _supports_fork()
+        fork_ok = parallel.supports_fork()
         self.n_jobs = n_jobs
         self._use_fork = fork_ok and n_jobs != 1
         if not fork_ok and n_jobs not in (0, 1):
@@ -320,20 +246,7 @@ class TokenClusterer:
         -------
         iterator[tuple[int, list[int]]]
             Global vocabulary index and its list of neighbors
-
-        Raises
-        ------
-        RuntimeError
-            If fork isn't supported
         """
-        if not _supports_fork():
-            raise RuntimeError(
-                "Fork-based multiprocessing isn't available. Use n_jobs=1"
-            )
-
-        n_workers = self.n_jobs if self.n_jobs > 0 else mp.cpu_count()
-        n_workers = min(n_workers, self.vocab_size)
-
         data = {
             "normalized": self.normalized,
             "norm_len": self.norm_len,
@@ -346,21 +259,12 @@ class TokenClusterer:
             "min_cluster_length": self.MIN_CLUSTER_LENGTH,
         }
 
-        # Split indices into chunks
-        chunk_size = max(1, self.vocab_size // (n_workers * 8))
-        work_items = [
-            ((idx, min(idx + chunk_size, self.vocab_size)))
-            for idx in range(0, self.vocab_size, chunk_size)
-        ]
-
-        # Execute in parallel with fork
-        ctx = mp.get_context("fork")
-        with ctx.Pool(
-            processes=n_workers, initializer=_init_worker, initargs=(data,)
-        ) as pool:
-            for chunk in pool.imap(_search_neighbors_batch, work_items, 1):
-                for idx, neighbors in chunk:
-                    yield idx, neighbors
+        yield from parallel.iter_neighbors_fork(
+            vocab_size=self.vocab_size,
+            n_jobs=self.n_jobs,
+            data=data,
+            core_fn=_search_neighbors_core,
+        )
 
     def _search_neighbors(self, idx):
         """Return global indices of all neighbors of `idx`.
