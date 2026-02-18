@@ -1,5 +1,4 @@
-treetok
--------
+## treetok
 
 Find and cluster near-duplicate tokens in HuggingFace tokenizer vocabularies
 using Levenshtein distance
@@ -15,13 +14,44 @@ using Levenshtein distance
         ├── __main__.py             CLI entrypoint
         ├── bktree.py               Flat BK-tree and union-find
         ├── cluster.py              Stratified clusterer
-        └── find.py                 High-level API: find, print, save
+        ├── find.py                 High-level API: find, print, save
         └── parallel.py             Multiprocessing functions
 ```
 
-**Usage**
+## Usage
 
-To call from the command line:
+### API
+
+`treetok` may be called from other Python programs like so:
+
+```py
+from treetok import cluster_vocab, print_clusters
+
+vocab = ["Hello", "hello", "world", "worlds"]
+normalize_fn = lambda x : x.strip()
+
+clusters = cluster_vocab(
+    vocab, max_distance=2, normalize_fn=normalize_fn, top_k=10
+)
+print_clusters(clusters)
+```
+
+`normalize_fn` accepts any callable with a string input. The default
+normalization strategy runs NFKC normalization and whitespace stripping on
+tokens
+
+### Command line
+
+`treetok` also work as a CLI for HuggingFace tokenizers. To use it for this,
+install the `cli` environment with `pixi` (or install `transformers`)
+separately:
+
+```sh
+pixi install -e cli
+pixi s -e cli
+```
+
+Then call `treetok` like so:
 
 1. Show all clusters for GPT-2
 
@@ -40,20 +70,3 @@ To call from the command line:
    ```sh
    python -m treetok -h
    ```
-
-To use in Python:
-
-```py
-from treetok import find_token_clusters, print_clusters
-
-normalize_fn = lambda x : x.strip()
-clusters = find_token_clusters(
-    "gpt2", max_distance=2, normalize_fn=normalize_fn, top_k=10
-)
-print_clusters(clusters)
-```
-
-`normalize_fn` accepts any callable with a string input. The default
-normalization strategy runs NFKC normalization and whitespace stripping on
-tokens.
-
