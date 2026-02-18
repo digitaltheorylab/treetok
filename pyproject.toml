@@ -20,6 +20,6 @@ treetok = { path = ".", editable = true }
 cli = { features = ["huggingface"] }
 
 [tool.pixi.feature.huggingface.pypi-dependencies]
-transformers = ">=5.2.0,<6"
+transformers = ">=4.0.0"
 
 [tool.pixi.tasks]

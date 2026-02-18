@@ -1394,7 +1394,7 @@ packages:
 - pypi: ./
   name: treetok
   version: 0.1.0
-  sha256: b325034d0d540283b5d06b90b7383074769755b84e1222b757d4adc32eaac4fb
+  sha256: 15ac66d9e1d5759b03101e32764e3cfd65103e2b8abdf44aa4920ec64e78a4bf
   requires_dist:
   - numpy>=2.4.2,<3
   - rapidfuzz>=3.14.3,<4
