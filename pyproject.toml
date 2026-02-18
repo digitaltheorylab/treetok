@@ -1,6 +1,6 @@
 [project]
 authors = [{name = "Tyler Shoemaker", email = "69219954+t-shoemaker@users.noreply.github.com"}]
-dependencies = ["numpy>=2.4.2,<3", "transformers>=5.2.0,<6", "rapidfuzz>=3.14.3,<4"]
+dependencies = ["numpy>=2.4.2,<3", "rapidfuzz>=3.14.3,<4"]
 name = "treetok"
 requires-python = ">= 3.11"
 version = "0.1.0"

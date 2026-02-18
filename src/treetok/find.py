@@ -3,8 +3,6 @@
 import json
 from pathlib import Path
 
-from transformers import AutoTokenizer
-
 from .clusterer import TokenClusterer
 
 
@@ -32,6 +30,8 @@ def find_token_clusters(
     list[dict]
         List of cluster info dictionaries, sorted by cluster size
     """
+    from transformers import AutoTokenizer
+
     tokenizer = AutoTokenizer.from_pretrained(name)
 
     vocab_dict = tokenizer.get_vocab()
