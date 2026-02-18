@@ -16,6 +16,7 @@ using Levenshtein distance
         ├── bktree.py               Flat BK-tree and union-find
         ├── cluster.py              Stratified clusterer
         └── find.py                 High-level API: find, print, save
+        └── parallel.py             Multiprocessing functions
 ```
 
 **Usage**
