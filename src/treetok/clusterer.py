@@ -1,5 +1,6 @@
 """Token clusterer."""
 
+import re
 import unicodedata
 import warnings
 from collections import Counter, defaultdict
@@ -8,6 +9,9 @@ import numpy as np
 
 from .bktree import _FlatBKTree, _UnionFind
 from . import parallel
+
+_EDGE_PUNCT = r"""[\s"'“”‘’`´.,;:!?()\[\]{}<>/\\|+=*_~^@#-]+"""
+EDGE_RE = re.compile(rf"^(?:{_EDGE_PUNCT})|(?:{_EDGE_PUNCT})$")
 
 
 def _search_neighbors_core(
@@ -346,7 +350,12 @@ class TokenClusterer:
 
     @staticmethod
     def _basic_normalize(tok):
-        """NFKC-normalize and strip a token.
+        """Normalize a token for matching.
+
+        Steps:
+        1. NFKC normalize
+        2. Strip and convert to lowercase
+        3. Drop edge punctuation
 
         Parameters
         ----------
@@ -358,7 +367,15 @@ class TokenClusterer:
         str
             Normalized token
         """
-        return unicodedata.normalize("NFKC", str(tok)).strip()
+        tok = unicodedata.normalize("NFKC", str(tok)).strip().lower()
+
+        # Drop edge puncutation
+        prev = None
+        while prev != tok:
+            prev = tok
+            tok = EDGE_RE.sub("", tok)
+
+        return tok
 
     @staticmethod
     def _infer_prefix_markers(

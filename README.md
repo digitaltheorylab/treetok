@@ -36,8 +36,11 @@ print_clusters(clusters)
 ```
 
 `normalize_fn` accepts any callable with a string input. The default
-normalization strategy runs NFKC normalization and whitespace stripping on
-tokens
+normalization strategy does the following:
+
+1. NFKC normalize
+2. Strip whitespace and convert to lowercase
+3. Remove common edge punctuation
 
 ### Command line
 
