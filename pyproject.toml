@@ -17,7 +17,7 @@ platforms = ["linux-64", "osx-arm64"]
 treetok = { path = ".", editable = true }
 
 [tool.pixi.environments]
-huggingface = { features = ["huggingface"] }
+cli = { features = ["huggingface"] }
 
 [tool.pixi.feature.huggingface.pypi-dependencies]
 transformers = ">=5.2.0,<6"
