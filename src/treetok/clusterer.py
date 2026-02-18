@@ -61,8 +61,10 @@ def _search_neighbors_core(
     # Compute effective max distance
     if tok_len < min_cluster_length:
         max_dist = 0
+    elif tok_len < 8:
+        max_dist = 1
     else:
-        max_dist = min(max_distance, tok_len // 2)
+        max_dist = min(max_distance, 2)
 
     if max_dist == 0:
         return []
@@ -101,7 +103,7 @@ class TokenClusterer:
     """
 
     # Minimum token length (after normalization) to be eligible for clustering
-    MIN_CLUSTER_LENGTH = 3
+    MIN_CLUSTER_LENGTH = 5
 
     def __init__(
         self, vocab, ids=None, normalize_fn=None, max_distance=1, n_jobs=1
