@@ -1,7 +1,6 @@
 ## treetok
 
-Find and cluster near-duplicate tokens in HuggingFace tokenizer vocabularies
-using Levenshtein distance
+Find and cluster surface-form token duplicates using Levensthein distance
 
 **File tree**
 
