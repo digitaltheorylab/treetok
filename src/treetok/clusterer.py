@@ -10,6 +10,8 @@ import numpy as np
 
 from .bktree import _FlatBKTree, _UnionFind
 
+_WORKER_DATA = None
+
 
 def _supports_fork():
     """Check if the platform supports fork-based multiprocessing.
@@ -108,20 +110,33 @@ def _search_neighbors_core(
     return neighbors
 
 
+def _init_worker(data):
+    """Initialize a worker.
+
+    Parameters
+    ----------
+    data : dict
+        Clusterer data
+    """
+    global _WORKER_DATA
+    _WORKER_DATA = data
+
+
 def _search_neighbors_batch(args):
     """Worker function for parallel neighbor search.
 
     Parameters
     ----------
-    args : tuple
-        Start index, end index, clusterer data
+    args : tuple[int]
+        Start index and end indices
 
     Returns
     -------
     list[tuple[int, list[int]]]
         List of (idx, neighbors) tuples for indices in range
     """
-    start, end, data = args
+    start, end = args
+    data = _WORKER_DATA
 
     results = []
     for idx in range(start, end):
@@ -189,9 +204,10 @@ class TokenClusterer:
         self.max_distance = max_distance
 
         # Multiprocessing configuration
+        fork_ok = _supports_fork()
         self.n_jobs = n_jobs
-        self._use_fork = _supports_fork() and n_jobs != 1
-        if not _supports_fork() and n_jobs not in (0, 1):
+        self._use_fork = fork_ok and n_jobs != 1
+        if not fork_ok and n_jobs not in (0, 1):
             warnings.warn(
                 "Fork-based multiprocessing not available on this platform. "
                 "Falling back to single-threaded execution.",
@@ -291,24 +307,30 @@ class TokenClusterer:
 
         Returns
         -------
-        list[tuple[int, list[int]]]
+        iterator[tuple[int, list[int]]]
             Global vocabulary index and its list of neighbors
         """
-        results = []
         for idx in range(self.vocab_size):
-            neighbors = self._search_neighbors(idx)
-            results.append((idx, neighbors))
-
-        return results
+            yield idx, self._search_neighbors(idx)
 
     def _search_all_neighbors_parallel(self):
         """Parallel neighbor search using fork.
 
         Returns
         -------
-        list[tuple[int, list[int]]]
+        iterator[tuple[int, list[int]]]
             Global vocabulary index and its list of neighbors
+
+        Raises
+        ------
+        RuntimeError
+            If fork isn't supported
         """
+        if not _supports_fork():
+            raise RuntimeError(
+                "Fork-based multiprocessing isn't available. Use n_jobs=1"
+            )
+
         n_workers = self.n_jobs if self.n_jobs > 0 else mp.cpu_count()
         n_workers = min(n_workers, self.vocab_size)
 
@@ -317,31 +339,28 @@ class TokenClusterer:
             "norm_len": self.norm_len,
             "prefix_marker": self.prefix_marker,
             "trees": self._trees,
-            "strata": dict(self._strata),
-            "strata_normalized": dict(self._strata_normalized),
+            "strata": self._strata,
+            "strata_normalized": self._strata_normalized,
             "global_to_local": self._global_to_local,
             "max_distance": self.max_distance,
             "min_cluster_length": self.MIN_CLUSTER_LENGTH,
         }
 
-        # Split into chunks
-        chunk_size = max(1, self.vocab_size // n_workers)
-        work_items = []
-        for idx in range(0, self.vocab_size, chunk_size):
-            end = min(idx + chunk_size, self.vocab_size)
-            work_items.append((idx, end, data))
+        # Split indices into chunks
+        chunk_size = max(1, self.vocab_size // (n_workers * 8))
+        work_items = [
+            ((idx, min(idx + chunk_size, self.vocab_size)))
+            for idx in range(0, self.vocab_size, chunk_size)
+        ]
 
         # Execute in parallel with fork
         ctx = mp.get_context("fork")
-        with ctx.Pool(processes=n_workers) as pool:
-            chunks = pool.map(_search_neighbors_batch, work_items)
-
-        # Flatten and return
-        results = []
-        for chunk in chunks:
-            results.extend(chunk)
-
-        return results
+        with ctx.Pool(
+            processes=n_workers, initializer=_init_worker, initargs=(data,)
+        ) as pool:
+            for chunk in pool.imap(_search_neighbors_batch, work_items, 1):
+                for idx, neighbors in chunk:
+                    yield idx, neighbors
 
     def _search_neighbors(self, idx):
         """Return global indices of all neighbors of `idx`.
