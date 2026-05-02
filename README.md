@@ -11,7 +11,7 @@ learned merge classifier.
 - Clusters the vocabulary
 
 Clustering uses an anchor-based algorithm designed to avoid transitive chain
-blow-ups.
+blow-ups. See our [documentation](docs/index.md) for more details.
 
 ### Install
 
@@ -75,16 +75,7 @@ python -m treetok cluster gpt2 --classifier model.json -k 25 -o clusters.json
 - [Qwen 3.5 9B](https://huggingface.co/Qwen/Qwen3.5-9B)
 
 Your mileage may vary with this model. For best performance, train one on your
-own tokenizer(s). See `docs/training.md`.
-
-### Docs
-
-- `docs/index.md`
-- `docs/overview.md`
-- `docs/how-it-works.md`
-- `docs/training.md`
-- `docs/cli.md`
-- `docs/file-tree.md`
+own tokenizer(s). See the [training guide](docs/training.md).
 
 ### Limitations
 
