@@ -8,12 +8,14 @@ from .data import (
     read_dataset,
     write_dataset,
 )
+from .featurizer import TreetokFeaturizer
 from .hf import TokenizerView, inspect
 from .model import MergeClassifier
 
 __all__ = [
     "DatasetConfig",
     "MergeClassifier",
+    "TreetokFeaturizer",
     "TokenizerView",
     "build_dataset",
     "cluster_vocab",
