@@ -21,9 +21,13 @@ python -m treetok build-dataset <model> -o data/<model>.parquet \
   --n-positives 2000 --n-hard-negatives 6000 --n-easy-negatives 1000
 ```
 
+If you're using the Python API, `TreetokFeaturizer` can encapsulate the
+`build/read/write_dataset -> feature_matrix` workflow. See the README's
+"Quickstart (Python API)".
+
 If you plan to cluster a tokenizer family you did not train on, it is usually
 better to train across multiple tokenizers (different families and vocab
-styles)
+styles).
 
 ## Understanding The Two Thresholds
 
