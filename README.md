@@ -27,26 +27,16 @@ pixi run python -m treetok inspect gpt2
 ```python
 from treetok import (
     MergeClassifier,
-    build_dataset,
+    TreetokFeaturizer,
     cluster_vocab,
-    feature_matrix,
-    inspect,
     print_clusters,
-    read_dataset,
-    write_dataset,
 )
 
-# Inspect a tokenizer
-view = inspect("gpt2")
-print(view.family, view.vocab_size, view.prefix_marker, view.marker_kind)
-
-# Build one or more labeled datasets
-write_dataset(build_dataset("gpt2"), "data/gpt2.parquet")
+# Use a featurizer to produce training data for the classifier
+fz = TreetokFeaturizer("gpt2").generate()
+X, y = fz.feature_matrix
 
 # Train
-table = read_dataset("data/gpt2.parquet")
-X, y = feature_matrix(table)
-
 clf = MergeClassifier().fit(X, y)
 clf.save("model.json")
 

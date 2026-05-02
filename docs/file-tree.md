@@ -17,9 +17,9 @@ treetok
         ├── candidates.py       # Edit-distance candidate generation
         ├── cluster.py          # Clustering pipeline
         ├── data.py             # Dataset construction
+        ├── featurizer.py       # Convenience dataset->(X,y)
         ├── features.py         # Feature spec + feature building
         ├── hf.py               # Hugging Face tokenizer utilities
         ├── model.py            # XGBoost merge classifier training
         └── parallel.py         # Thread-pool utilities
 ```
-
