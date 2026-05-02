@@ -1,133 +1,136 @@
-"""Fork-based multiprocessing backend."""
+"""Thread-pool parallelism for the cluster-pass scoring loop."""
 
-import sys
-import multiprocessing as mp
+import os
+from concurrent.futures import ThreadPoolExecutor
+from typing import Iterable, Iterator
 
-_WORKER_DATA = None
-_WORKER_CORE_FN = None
+import numpy as np
 
-
-def supports_fork():
-    """Check if the platform supports fork-based multiprocessing.
-
-    Returns
-    -------
-    bool
-        True if fork is available and safe to use
-    """
-    # Windows won't support
-    if sys.platform == "win32":
-        return False
-
-    # Check if fork is available in multiprocessing
-    if not hasattr(mp, "get_start_method"):
-        return False
-
-    # Check available start methods
-    try:
-        methods = mp.get_all_start_methods()
-        return "fork" in methods
-    except Exception:
-        return False
+from .features import TokenFeatures, pair_features_batch
+from .model import MergeClassifier
 
 
-def _init_worker(data, core_fn):
-    """Initialize a worker.
+def resolve_n_jobs(n_jobs: int) -> int:
+    """Resolve a user-supplied `n_jobs` to an actual worker count.
+
+    `n_jobs <= 0` resolves to `os.cpu_count()` (or 1 if that's None).
+    Otherwise the value is returned as-is, clipped to at least 1
 
     Parameters
     ----------
-    data : dict
-        Clusterer data
-    """
-    global _WORKER_DATA, _WORKER_CORE_FN
-    _WORKER_DATA = data
-    _WORKER_CORE_FN = core_fn
-
-
-def _search_neighbors_batch(args):
-    """Worker function for parallel neighbor search.
-
-    Parameters
-    ----------
-    args : tuple[int]
-        Start index and end indices
-
-    Returns
-    -------
-    list[tuple[int, list[int]]]
-        List of (idx, neighbors) tuples for indices in range
-    """
-    start, end = args
-    data = _WORKER_DATA
-    core_fn = _WORKER_CORE_FN
-
-    out = []
-    for idx in range(start, end):
-        neighbors = core_fn(
-            idx,
-            data["normalized"],
-            data["norm_len"],
-            data["prefix_marker"],
-            data["trees"],
-            data["strata_normalized"],
-            data["strata"],
-            data["global_to_local"],
-            data["max_distance"],
-            data["min_cluster_length"],
-        )
-        out.append((idx, neighbors))
-
-    return out
-
-
-def iter_neighbors_fork(*, vocab_size, n_jobs, data, core_fn, chunk_size=None):
-    """Yield (idx, neighbors) using a fork-based multiprocessing pool.
-
-    Returns
-    -------
-    vocab_size : int
-        Total number of vocabulary items
     n_jobs : int
-        Number of worker processes. If > 0, use exactly that many workers. If
-        <= 0, use all available CPUs
-    data : dict
-        Payload for `core_fn`
-    core_fn : callable
-        Core neighbor-search function
-    chunk_size : int or None
-        Size of contiguous index ranges assigned to each index. If None, a
-        default is chosen
+        Worker count requested by the caller
 
-    Yields
-    ------
-    tuple[int, list[int]]
-        Global vocabulary index and its list of neighbors
-
-    Raises
-    ------
-    RunTimeError
-        If fork isn't available
+    Returns
+    -------
+    int
+        Resolved worker count
     """
-    if not supports_fork():
-        raise RuntimeError("Fork unavailable; cannot use parallel backend")
+    if n_jobs <= 0:
+        return max(1, os.cpu_count() or 1)
 
-    n_workers = n_jobs if n_jobs > 0 else mp.cpu_count()
-    n_workers = max(1, min(n_workers, vocab_size))
+    return max(1, int(n_jobs))
 
-    if chunk_size is None:
-        chunk_size = max(1, vocab_size // n_workers)
 
-    work_items = [
-        (idx, min(idx + chunk_size, vocab_size))
-        for idx in range(0, vocab_size, chunk_size)
-    ]
+def _score_one_batch(
+    tf: TokenFeatures,
+    classifier: MergeClassifier,
+    threshold: float,
+    batch: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Score one batch and return the kept pairs.
 
-    ctx = mp.get_context("fork")
-    with ctx.Pool(
-        processes=n_workers,
-        initializer=_init_worker,
-        initargs=(data, core_fn),
-    ) as pool:
-        for chunk in pool.imap(_search_neighbors_batch, work_items, 1):
-            for idx, neighbors in chunk:
-                yield idx, neighbors
+    Parameters
+    ----------
+    tf : TokenFeatures
+        Precomputed per-token cache
+    classifier : MergeClassifier
+        Fitted classifier
+    threshold : float
+        Probability cutoff
+    batch : np.ndarray
+        Shape `(k, 2)` batch of token-index pairs
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        `(kept_pairs, kept_probs)` where both are length-k filtered
+    """
+    X = pair_features_batch(tf, batch)
+    p = classifier.predict_proba(X)
+    keep = p >= threshold
+
+    return batch[keep], p[keep]
+
+
+def score_pairs_batched(
+    tf: TokenFeatures,
+    classifier: MergeClassifier,
+    batch_iter: Iterable[np.ndarray],
+    threshold: float,
+    *,
+    n_jobs: int,
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Yield `(kept_pairs, kept_probs)` for each input batch.
+
+    `batch_iter` is an iterator of numpy `(k, 2)` int64 arrays; the upstream
+    candidate iterator already pre-sized them.
+
+    `n_jobs == 1` runs entirely on the main thread. `n_jobs > 1` dispatches
+    scoring to a thread pool while the candidate iterator is still consumed
+    sequentially on the main thread.
+
+    Output ordering matches the order the candidate iterator emits batches.
+
+    Parameters
+    ----------
+    tf : TokenFeatures
+        Precomputed per-token cache
+    classifier : MergeClassifier
+        Fitted classifier
+    batch_iter : Iterable[np.ndarray]
+        Iterator of `(k, 2)` int64 pair batches
+    threshold : float
+        Probability cutoff
+    n_jobs : int
+        Thread count. `<= 0` resolves to all available CPUs
+
+    Returns
+    -------
+    Iterator[tuple[np.ndarray, np.ndarray]]
+        Iterator yielding filtered batches
+    """
+    workers = resolve_n_jobs(n_jobs)
+
+    if workers == 1:
+        for batch in batch_iter:
+            yield _score_one_batch(tf, classifier, threshold, batch)
+        return
+
+    # Buffered prefetch: maintain up to `workers * 2` batches so the producer
+    # never starves the pool, but bounded so we don't materialize the whole
+    # candidate stream up front
+    in_flight = []
+    max_in_flight = max(2 * workers, 4)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        bi = iter(batch_iter)
+
+        for batch in bi:
+            in_flight.append(
+                pool.submit(_score_one_batch, tf, classifier, threshold, batch)
+            )
+            if len(in_flight) >= max_in_flight:
+                break
+
+        while in_flight:
+            fut = in_flight.pop(0)
+            yield fut.result()
+
+            try:
+                batch = next(bi)
+            except StopIteration:
+                continue
+            in_flight.append(
+                pool.submit(_score_one_batch, tf, classifier, threshold, batch)
+            )
