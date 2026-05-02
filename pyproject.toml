@@ -28,3 +28,4 @@ treetok = { path = ".", editable = true }
 
 [tool.pixi.tasks]
 train-model = { cmd = ["zsh", "scripts/train.sh"], description = "Train default model" }
+test-model = { cmd = ["sh", "-c", "python -m treetok cluster Qwen/Qwen3-8B --classifier data/model.json 2>&1 | head -n 50"], description = "Test model on an OOD tokenizer" }

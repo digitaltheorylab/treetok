@@ -1482,7 +1482,7 @@ packages:
 - pypi: ./
   name: treetok
   version: 0.2.0
-  sha256: 233182ed3e68025f8add1823fa8a6683f2c263d7e1e4b68b9e4eeb76159dcc62
+  sha256: 50706ba5c0b2c1311e7f63879592154662b4c74d077c4a6659a61810b862c1f4
   requires_dist:
   - transformers>=5.0,<6.0
   - numpy>=2.0,<3
