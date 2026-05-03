@@ -9,7 +9,7 @@ CLF="model.json"
 # Preferred training dataset composition
 N_POS=2500
 N_HARD=24000
-N_EASY=1000
+N_EASY=2000
 SEED=0
 
 # Preferred training hyperparameters
