@@ -4,8 +4,8 @@
 
 In many Hugging Face tokenizers, the same user-visible text can appear in
 multiple token strings due to conventions like leading-space markers
-(byte-level BPE / SentencePiece), WordPiece continuation markers, case
-variants, and Unicode normalization differences.
+(byte-level BPE/SentencePiece), WordPiece continuation markers, case variants,
+and Unicode normalization differences.
 
 `treetok` learns a merge decision rule from labeled token pairs and then uses
 that rule to cluster a vocabulary into small groups that represent "the same
@@ -31,10 +31,10 @@ these as negatives:
 
 ## Typical Workflow
 
-1. Inspect a tokenizer to understand its marker convention.
-2. Build a labeled dataset of token pairs.
-3. Train a classifier.
-4. Cluster a tokenizer vocabulary and review the clusters.
+1. Inspect a tokenizer to understand its marker convention
+2. Build a labeled dataset of token pairs
+3. Train a classifier
+4. Cluster a tokenizer vocabulary and review the clusters
 
-See `training.md` for guidance on dataset sizing and threshold tuning, and
-`cli.md` for the CLI surface.
+See the [training guide](training.md) for guidance on dataset sizing and
+threshold tuning, and the [CLI instructions](cli.md) for the CLI surface.

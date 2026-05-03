@@ -9,7 +9,8 @@ treetok
 ├── pyproject.toml              # Python package metadata + pixi workspace config
 ├── README.md                   # Project README
 ├── scripts
-│   └── train.sh                # Train the default model
+│   ├── grid_search.py          # Script for grid searching shipped model's datasets, parameters
+│   └── train.sh                # Train the shipped model
 └── src
     └── treetok
         ├── __init__.py         # Public API
