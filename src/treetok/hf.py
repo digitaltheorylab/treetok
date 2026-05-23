@@ -1,5 +1,10 @@
 """Inspect an AutoTokenizer."""
 
+import os
+
+os.environ.setdefault("TRANSFORMERS_NO_TORCH", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Iterable
