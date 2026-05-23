@@ -7,7 +7,7 @@ import numpy as np
 from rapidfuzz.distance import DamerauLevenshtein, JaroWinkler, Levenshtein
 
 from .hf import TokenizerView
-
+from .script import script_bucket
 
 FEATURE_SPEC = {
     "version": 1,
@@ -57,110 +57,6 @@ _FAMILY_FEATURE_NAMES = tuple(
 _FAMILY_FEATURE_IDXS = np.array(
     [_FEAT_IDX[n] for n in _FAMILY_FEATURE_NAMES], dtype=np.int64
 )
-
-
-# Script bucket ids
-_SCRIPT_LATIN = 1
-_SCRIPT_CYRILLIC = 2
-_SCRIPT_GREEK = 3
-_SCRIPT_CJK = 4
-_SCRIPT_ARABIC = 5
-_SCRIPT_HEBREW = 6
-_SCRIPT_DEVANAGARI = 7
-_SCRIPT_OTHER = 0
-
-
-def _script_bucket(s: str) -> int:
-    """Return a coarse script bucket id for the dominant script in `s`.
-
-    Parameters
-    ----------
-    s : str
-        Input string
-
-    Returns
-    -------
-    int
-        Script bucket id
-    """
-    for ch in s:
-        cat = unicodedata.category(ch)
-        if cat[0] not in ("L",):
-            continue
-
-        try:
-            name = unicodedata.name(ch)
-        except ValueError:
-            continue
-
-        if "LATIN" in name:
-            return _SCRIPT_LATIN
-        if "CYRILLIC" in name:
-            return _SCRIPT_CYRILLIC
-        if "GREEK" in name:
-            return _SCRIPT_GREEK
-        if (
-            "CJK" in name
-            or "HIRAGANA" in name
-            or "KATAKANA" in name
-            or "HANGUL" in name
-        ):
-            return _SCRIPT_CJK
-        if "ARABIC" in name:
-            return _SCRIPT_ARABIC
-        if "HEBREW" in name:
-            return _SCRIPT_HEBREW
-        if "DEVANAGARI" in name:
-            return _SCRIPT_DEVANAGARI
-
-        return _SCRIPT_OTHER
-
-    return _SCRIPT_OTHER
-
-
-def _char_script(c: str) -> int:
-    """Return the script bucket id for a single character.
-
-    Parameters
-    ----------
-    c : str
-        Single character
-
-    Returns
-    -------
-    int
-        Script bucket id
-    """
-    cat = unicodedata.category(c)
-    if cat[0] != "L":
-        return _SCRIPT_OTHER
-
-    try:
-        name = unicodedata.name(c)
-    except ValueError:
-        return _SCRIPT_OTHER
-
-    if "LATIN" in name:
-        return _SCRIPT_LATIN
-    if "CYRILLIC" in name:
-        return _SCRIPT_CYRILLIC
-    if "GREEK" in name:
-        return _SCRIPT_GREEK
-    if (
-        "CJK" in name
-        or "HIRAGANA" in name
-        or "KATAKANA" in name
-        or "HANGUL" in name
-    ):
-        return _SCRIPT_CJK
-    if "ARABIC" in name:
-        return _SCRIPT_ARABIC
-    if "HEBREW" in name:
-        return _SCRIPT_HEBREW
-    if "DEVANAGARI" in name:
-        return _SCRIPT_DEVANAGARI
-
-    return _SCRIPT_OTHER
 
 
 def _lcp_len(a: str, b: str) -> int:
@@ -299,7 +195,7 @@ class TokenFeatures:
 
         len_chars = np.array([len(t) for t in vocab], dtype=np.int32)
         stripped_len = np.array([len(s) for s in stripped], dtype=np.int32)
-        script = np.array([_script_bucket(s) for s in stripped], dtype=np.int8)
+        script = np.array([script_bucket(s) for s in stripped], dtype=np.int8)
 
         family_one_hot = view.family_one_hot()
         if family_one_hot.shape[0] != len(_FAMILY_FEATURE_NAMES):

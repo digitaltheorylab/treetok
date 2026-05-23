@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 from .candidates import _eligible_mask, iter_pairs
 from .features import FEATURE_SPEC, TokenFeatures, pair_features
 from .hf import TokenizerView, inspect
+from .script import char_script
 
 
 @dataclass
@@ -208,13 +209,11 @@ def _derive_alphabets(
         Mapping from script bucket id to alphabet string, sorted by descending
         frequency
     """
-    from .features import _char_script
-
     freq = defaultdict(Counter)
     for s in view.stripped:
         for c in s:
             if c.isalpha():
-                script = _char_script(c)
+                script = char_script(c)
                 freq[script][c.lower()] += 1
 
     result = {}
