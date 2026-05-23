@@ -118,6 +118,51 @@ def _script_bucket(s: str) -> int:
     return _SCRIPT_OTHER
 
 
+def _char_script(c: str) -> int:
+    """Return the script bucket id for a single character.
+
+    Parameters
+    ----------
+    c : str
+        Single character
+
+    Returns
+    -------
+    int
+        Script bucket id
+    """
+    cat = unicodedata.category(c)
+    if cat[0] != "L":
+        return _SCRIPT_OTHER
+
+    try:
+        name = unicodedata.name(c)
+    except ValueError:
+        return _SCRIPT_OTHER
+
+    if "LATIN" in name:
+        return _SCRIPT_LATIN
+    if "CYRILLIC" in name:
+        return _SCRIPT_CYRILLIC
+    if "GREEK" in name:
+        return _SCRIPT_GREEK
+    if (
+        "CJK" in name
+        or "HIRAGANA" in name
+        or "KATAKANA" in name
+        or "HANGUL" in name
+    ):
+        return _SCRIPT_CJK
+    if "ARABIC" in name:
+        return _SCRIPT_ARABIC
+    if "HEBREW" in name:
+        return _SCRIPT_HEBREW
+    if "DEVANAGARI" in name:
+        return _SCRIPT_DEVANAGARI
+
+    return _SCRIPT_OTHER
+
+
 def _lcp_len(a: str, b: str) -> int:
     """Return the length of the longest common prefix.
 
