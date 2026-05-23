@@ -15,7 +15,6 @@ from .hf import inspect
 from .model import MergeClassifier
 from .parallel import score_pairs_batched
 
-
 DEFAULT_BATCH_SIZE = 50_000
 DEFAULT_N_JOBS = 1
 

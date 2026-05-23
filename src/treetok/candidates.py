@@ -20,7 +20,6 @@ from rapidfuzz.distance import Levenshtein
 
 from .features import TokenFeatures
 
-
 MIN_LEN = 3
 MAX_DIST_CEILING = 3
 DEFAULT_BATCH_SIZE = 50_000

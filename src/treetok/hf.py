@@ -12,7 +12,6 @@ from typing import Iterable
 import numpy as np
 from transformers import AutoTokenizer
 
-
 # Canonical marker strings recognized across tokenizer families
 LEADING_SPACE_MARKERS = ("\u0120", "\u2581")  # 'Ġ' (byte-level BPE), '▁' (SP)
 CONTINUATION_MARKERS = ("##",)  # WordPiece
