@@ -1,5 +1,6 @@
 """Writing-system classification for tokens and characters."""
 
+import string
 import unicodedata
 
 # Script bucket ids
@@ -11,6 +12,54 @@ SCRIPT_CJK = 4
 SCRIPT_ARABIC = 5
 SCRIPT_HEBREW = 6
 SCRIPT_DEVANAGARI = 7
+
+
+# Scripts with individual letters; for these, single-character head/tail edits
+# work for "near miss" and the noising alphabet should always include the base
+# letter set
+ALPHABETIC_SCRIPTS = frozenset(
+    {
+        SCRIPT_LATIN,
+        SCRIPT_CYRILLIC,
+        SCRIPT_GREEK,
+        SCRIPT_ARABIC,
+        SCRIPT_HEBREW,
+        SCRIPT_DEVANAGARI,
+    }
+)
+
+# Per-script canonical core alphabets. These act as a floor for the noising
+# alphabet: any script-appropriate single-character edit should be reachable
+# even when a tokenizer's vocabulary undersamples low-frequency letters
+#
+# Note: we skip CJK and OTHER. Character insertion noising isn't a meaningful
+# "near miss" model for those buckets, so the dataset builder falls back to its
+# punctuation/suffix-bucket passes instead
+CANONICAL_CORES = {
+    SCRIPT_LATIN: string.ascii_lowercase,
+    SCRIPT_CYRILLIC: "абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+    SCRIPT_GREEK: "αβγδεζηθικλμνξοπρστυφχψω",
+    SCRIPT_ARABIC: "ابتثجحخدذرزسشصضطظعغفقكلمنهوي",
+    SCRIPT_HEBREW: "אבגדהוזחטיכלמנסעפצקרשת",
+    SCRIPT_DEVANAGARI: "अआइईउऊऋएऐओऔकखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसह",
+}
+
+
+def is_alphabetic(script_id: int) -> bool:
+    """Return True if `script_id` is an alphabetic script.
+
+    Parameters
+    ----------
+    script_id : int
+        Script bucket id
+
+    Returns
+    -------
+    bool
+        True for Latin/Cyrillic/Greek/Arabic/Hebrew/Devanagari; False for CJK
+        and OTHER
+    """
+    return script_id in ALPHABETIC_SCRIPTS
 
 
 def script_bucket(s: str) -> int:
