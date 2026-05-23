@@ -1,7 +1,6 @@
 """Training-data construction for the merge classifier."""
 
 import random
-import string
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -13,7 +12,7 @@ import pyarrow.parquet as pq
 from .candidates import _eligible_mask, iter_pairs
 from .features import FEATURE_SPEC, TokenFeatures, pair_features
 from .hf import TokenizerView, inspect
-from .script import char_script
+from .script import CANONICAL_CORES, char_script, is_alphabetic
 
 
 @dataclass
@@ -190,41 +189,66 @@ def _vocab_index(view: TokenizerView) -> dict[str, int]:
 
 
 def _derive_alphabets(
-    view: TokenizerView, min_cap: int = 26, max_cap: int = 100
+    view: TokenizerView, final_cap: int = 64
 ) -> dict[int, str]:
-    """Build per-script alphabets from vocabulary character frequencies.
+    """Build per-script noising alphabets for hard-negative generation.
+
+    For each alphabetic script, the output alphabet is the script's canonical
+    core (see `CANONICAL_CORES`) followed by the most frequent additional
+    characters observed in the tokenizer vocabulary, truncated to `final_cap`.
+    The core is always included so low-frequency core letters are never 
+    dropped when a tokenizer happens to undersample them
+
+    Non-alphabetic scripts (CJK, OTHER) are omitted from the result. Callers
+    should treat a missing key as "skip the character-insertion loop" rather
+    than fall back to ASCII
 
     Parameters
     ----------
     view : TokenizerView
         Tokenizer snapshot
-    min_cap : int
-        Minimum alphabet size before capping
-    max_cap : int
-        Maximum alphabet size for large scripts
+    final_cap : int
+        Maximum number of characters per alphabet, including the core. Bounds
+        the per-token partner-generation work in the hard-negative miner
 
     Returns
     -------
     dict[int, str]
-        Mapping from script bucket id to alphabet string, sorted by descending
-        frequency
+        Mapping from script bucket id to alphabet string. For each alphabetic
+        script the string starts with that script's canonical core (in
+        canonical order), followed by vocabulary-derived augmentations in
+        descending frequency
     """
     freq = defaultdict(Counter)
     for s in view.stripped:
         for c in s:
-            if c.isalpha():
-                script = char_script(c)
-                freq[script][c.lower()] += 1
+            if not c.isalpha():
+                continue
+
+            sid = char_script(c)
+            if not is_alphabetic(sid):
+                continue
+
+            # Skip characters whose casefold expands to multiple code points
+            # (e.g. German `ß` -> "ss"); we want strictly single-char alphabet
+            # entries so the partner-generation loop emits well-formed strings
+            folded = c.casefold()
+            if len(folded) != 1:
+                continue
+
+            freq[sid][folded] += 1
 
     result = {}
-    for script_id, counts in freq.items():
-        n = len(counts)
-        if n == 0:
-            continue
-
-        cap = min(max_cap, max(min_cap, int(n * 0.15)))
-        top_chars = [c for c, _ in counts.most_common(cap)]
-        result[script_id] = "".join(sorted(top_chars))
+    for sid, core in CANONICAL_CORES.items():
+        core_set = set(core)
+        # Append vocabulary chars not already in the core, in frequency-
+        # descending order. `counts.most_common()` returns an empty list when
+        # `sid` is absent from `freq`, so scripts the tokenizer doesn't use
+        # still get the core
+        counts = freq.get(sid, Counter())
+        tail = [c for c, _ in counts.most_common() if c not in core_set]
+        alphabet = core + "".join(tail)
+        result[sid] = alphabet[:final_cap]
 
     return result
 
@@ -439,7 +463,11 @@ def _explicit_edit_negatives(
         if len(s) >= 2:
             partners.append(s[1:])
             partners.append(s[:-1])
-        alphabet = alphabets.get(tf.script[i], string.ascii_lowercase)
+
+        # Single-character insertions/substitutions only apply to alphabetic
+        # scripts; for CJK/OTHER tokens we skip this loop and fall through to
+        # the punctuation-prefix and suffix-bucket passes
+        alphabet = alphabets.get(int(tf.script[i]), "")
         for c in alphabet:
             partners.append(c + s)
             partners.append(s + c)
