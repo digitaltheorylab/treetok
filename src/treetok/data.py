@@ -219,13 +219,14 @@ def _derive_alphabets(
         canonical order), followed by vocabulary-derived augmentations in
         descending frequency
     """
+    family = view.family
     freq = defaultdict(Counter)
     for s in view.stripped:
         for c in s:
             if not c.isalpha():
                 continue
 
-            sid = char_script(c)
+            sid = char_script(c, family)
             if not is_alphabetic(sid):
                 continue
 
