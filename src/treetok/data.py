@@ -3,7 +3,7 @@
 import random
 import string
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 
 import numpy as np
@@ -22,7 +22,6 @@ class DatasetConfig:
     n_synthetic_positives: int = 5_000
     n_hard_negatives: int = 5_000
     n_easy_negatives: int = 2_000
-    typo_alphabet: str = string.ascii_lowercase
     seed: int = 0
 
 
@@ -130,58 +129,6 @@ def _strip_edge_punct(s: str) -> list[str]:
     return out
 
 
-def _typo_variants(
-    s: str, alphabet: str, rng: random.Random, n: int = 3
-) -> list[str]:
-    """Return single-character typo variants.
-
-    Parameters
-    ----------
-    s : str
-        Token string
-    alphabet : str
-        Characters used for insertion/substitution
-    rng : random.Random
-        Random generator
-    n : int
-        Number of random variants to sample
-
-    Returns
-    -------
-    list[str]
-        Distinct typo variants
-    """
-    if len(s) < 2:
-        return []
-
-    out = set()
-    for _ in range(n):
-        op = rng.choice(("ins", "del", "sub"))
-        i = rng.randrange(len(s))
-
-        match op:
-            case "del":
-                out.add(s[:i] + s[i + 1 :])
-
-            case "ins":
-                c = rng.choice(alphabet)
-                out.add(s[:i] + c + s[i:])
-
-            case "sub":
-                c = rng.choice(alphabet)
-                if c == s[i]:
-                    continue
-
-                out.add(s[:i] + c + s[i + 1 :])
-
-            case _:
-                continue
-
-    out.discard(s)
-
-    return list(out)
-
-
 def _candidate_partners(s: str, view: TokenizerView) -> list[str]:
     """Generate candidate surface-form variant strings for `s`.
 
@@ -239,6 +186,48 @@ def _vocab_index(view: TokenizerView) -> dict[str, int]:
         Mapping from token string to its index in `view.vocab`
     """
     return {t: i for i, t in enumerate(view.vocab)}
+
+
+def _derive_alphabets(
+    view: TokenizerView, min_cap: int = 26, max_cap: int = 100
+) -> dict[int, str]:
+    """Build per-script alphabets from vocabulary character frequencies.
+
+    Parameters
+    ----------
+    view : TokenizerView
+        Tokenizer snapshot
+    min_cap : int
+        Minimum alphabet size before capping
+    max_cap : int
+        Maximum alphabet size for large scripts
+
+    Returns
+    -------
+    dict[int, str]
+        Mapping from script bucket id to alphabet string, sorted by descending
+        frequency
+    """
+    from .features import _char_script
+
+    freq = defaultdict(Counter)
+    for s in view.stripped:
+        for c in s:
+            if c.isalpha():
+                script = _char_script(c)
+                freq[script][c.lower()] += 1
+
+    result = {}
+    for script_id, counts in freq.items():
+        n = len(counts)
+        if n == 0:
+            continue
+
+        cap = min(max_cap, max(min_cap, int(n * 0.15)))
+        top_chars = [c for c, _ in counts.most_common(cap)]
+        result[script_id] = "".join(sorted(top_chars))
+
+    return result
 
 
 def synthetic_positives(
@@ -417,6 +406,7 @@ def _explicit_edit_negatives(
     """
     view = tf.view
     vi = {t: i for i, t in enumerate(view.vocab)}
+    alphabets = _derive_alphabets(view)
 
     out = []
 
@@ -450,7 +440,8 @@ def _explicit_edit_negatives(
         if len(s) >= 2:
             partners.append(s[1:])
             partners.append(s[:-1])
-        for c in "abcdefghijklmnopqrstuvwxyz":
+        alphabet = alphabets.get(tf.script[i], string.ascii_lowercase)
+        for c in alphabet:
             partners.append(c + s)
             partners.append(s + c)
 
