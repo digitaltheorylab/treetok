@@ -195,7 +195,9 @@ class TokenFeatures:
 
         len_chars = np.array([len(t) for t in vocab], dtype=np.int32)
         stripped_len = np.array([len(s) for s in stripped], dtype=np.int32)
-        script = np.array([script_bucket(s) for s in stripped], dtype=np.int8)
+        script = np.array(
+            [script_bucket(s, view.family) for s in stripped], dtype=np.int8
+        )
 
         family_one_hot = view.family_one_hot()
         if family_one_hot.shape[0] != len(_FAMILY_FEATURE_NAMES):
