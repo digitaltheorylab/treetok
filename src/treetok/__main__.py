@@ -2,10 +2,27 @@
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
 import pyarrow as pa
+
+logger = logging.getLogger("treetok")
+
+
+def setup_logging():
+    """Set up logging."""
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    logging.getLogger("treetok").setLevel(logging.INFO)
+
+    for name in ("httpx", "httpcore", "huggingface_hub", "transformers"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
@@ -16,6 +33,7 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     args : argparse.Namespace
         Parsed CLI arguments
     """
+
     from .hf import inspect
 
     view = inspect(args.model)
@@ -52,7 +70,13 @@ def _cmd_build_dataset(args: argparse.Namespace) -> int:
     )
     table = build_dataset(args.model, cfg)
     write_dataset(table, args.output)
-    print(f"wrote {table.num_rows} rows to {args.output} (model={args.model})")
+    logger.info(
+        "wrote %d rows to %s (model=%s)",
+        table.num_rows,
+        args.output,
+        args.model,
+    )
+
     return 0
 
 
@@ -73,14 +97,9 @@ def _cmd_train(args: argparse.Namespace) -> int:
         if len(tables) > 1
         else tables[0]
     )
-    print(f"loaded {table.num_rows} rows across {len(tables)} file(s)")
+    logger.info("loaded %d rows from %d file(s)", table.num_rows, len(tables))
 
     X, y = feature_matrix(table)
-    print(
-        f"X shape: {X.shape}, positives: {int((y == 1).sum())}, "
-        f"negatives: {int((y == 0).sum())}"
-    )
-
     clf = MergeClassifier()
     clf.fit(
         X,
@@ -95,26 +114,17 @@ def _cmd_train(args: argparse.Namespace) -> int:
         merge_threshold_floor=args.merge_threshold_floor,
     )
 
-    print(
-        f"trained: edge_threshold={clf.report_.edge_threshold:.4f} "
-        f"merge_threshold={clf.report_.merge_threshold:.4f}"
-    )
-    print(
-        f"  edge:  val_f1={clf.report_.val_f1:.4f} "
-        f"P={clf.report_.val_edge_precision:.4f} "
-        f"R={clf.report_.val_edge_recall:.4f}"
-    )
-    print(
-        f"  merge: P={clf.report_.val_merge_precision:.4f} "
-        f"R={clf.report_.val_merge_recall:.4f}"
-    )
-    print(
-        f"  (train_f1={clf.report_.train_f1:.4f}, "
-        f"n_train={clf.report_.n_train}, n_val={clf.report_.n_val})"
+    logger.info(
+        "trained classifier (edge_threshold=%.4f, merge_threshold=%.4f, "
+        "val_f1=%.4f)",
+        clf.report_.edge_threshold,
+        clf.report_.merge_threshold,
+        clf.report_.val_f1,
     )
 
     clf.save(args.output)
-    print(f"saved classifier to {args.output}")
+    logger.info("saved classifier to %s", args.output)
+
     return 0
 
 
@@ -149,7 +159,7 @@ def _cmd_cluster(args: argparse.Namespace) -> int:
                 clusters_to_jsonable(clusters), indent=2, ensure_ascii=False
             )
         )
-        print(f"saved {len(clusters)} clusters to {args.output}")
+        logger.info("saved %s clusters to %s", len(clusters), args.output)
 
     return 0
 
@@ -267,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
     p_cluster.set_defaults(func=_cmd_cluster)
 
     args = parser.parse_args(argv)
+    setup_logging()
 
     return args.func(args)
 
