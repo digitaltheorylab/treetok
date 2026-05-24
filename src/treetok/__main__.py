@@ -114,12 +114,23 @@ def _cmd_train(args: argparse.Namespace) -> int:
         merge_threshold_floor=args.merge_threshold_floor,
     )
 
+    r = clf.report_
+
     logger.info(
-        "trained classifier (edge_threshold=%.4f, merge_threshold=%.4f, "
-        "val_f1=%.4f)",
-        clf.report_.edge_threshold,
-        clf.report_.merge_threshold,
-        clf.report_.val_f1,
+        "trained classifier: n_train=%d n_val=%d val_f1=%.4f",
+        r.n_train,
+        r.n_val,
+        r.val_f1,
+    )
+    logger.info(
+        "thresholds: edge=%.4f merge=%.4f | "
+        "edge_pr=(p=%.4f, r=%.4f) merge_pr=(p=%.4f, r=%.4f)",
+        r.edge_threshold,
+        r.merge_threshold,
+        r.val_edge_precision,
+        r.val_edge_recall,
+        r.val_merge_precision,
+        r.val_merge_recall,
     )
 
     clf.save(args.output)
