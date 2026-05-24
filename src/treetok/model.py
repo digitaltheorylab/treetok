@@ -1,7 +1,7 @@
 """XGBoost merge classifier wrapper."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -389,14 +389,14 @@ class MergeClassifier:
         val_merge_recall = recall[merge_idx] if len(recall) else 0.0
 
         return TrainReport(
-            edge_threshold=self.edge_threshold_,
-            merge_threshold=self.merge_threshold_,
-            train_f1=_f1_binary(ytr, train_pred),
-            val_f1=_f1_binary(yv, val_pred),
-            val_edge_precision=val_edge_precision,
-            val_edge_recall=val_edge_recall,
-            val_merge_precision=val_merge_precision,
-            val_merge_recall=val_merge_recall,
+            edge_threshold=float(self.edge_threshold_),
+            merge_threshold=float(self.merge_threshold_),
+            train_f1=float(_f1_binary(ytr, train_pred)),
+            val_f1=float(_f1_binary(yv, val_pred)),
+            val_edge_precision=float(val_edge_precision),
+            val_edge_recall=float(val_edge_recall),
+            val_merge_precision=float(val_merge_precision),
+            val_merge_recall=float(val_merge_recall),
             n_train=len(ytr),
             n_val=len(yv),
         )
@@ -526,17 +526,19 @@ class MergeClassifier:
         self._ensure_fitted()
         path = Path(path)
 
-        booster_json = json.loads(
-            self.booster_.save_raw(raw_format="json").decode("utf-8")
-        )
+        booster_raw = self.booster_.save_raw(raw_format="json").decode("utf-8")
+        report = asdict(self.report_) if self.report_ is not None else None
+
         payload = {
             "feature_spec_version": self.feature_spec_version,
             "feature_names": self.feature_names,
             "edge_threshold": self.edge_threshold_,
             "merge_threshold": self.merge_threshold_,
             "params": self.params,
-            "booster": booster_json,
+            "booster": json.loads(booster_raw),
+            "report": report,
         }
+
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     @classmethod
@@ -573,7 +575,7 @@ class MergeClassifier:
             bytearray(json.dumps(payload["booster"]).encode("utf-8"))
         )
 
-        return cls(
+        clf = cls(
             edge_threshold=float(payload["edge_threshold"]),
             merge_threshold=float(payload["merge_threshold"]),
             booster=booster,
@@ -581,3 +583,9 @@ class MergeClassifier:
             feature_names=list(payload["feature_names"]),
             params=dict(payload.get("params") or {}),
         )
+
+        report_data = payload.get("report")
+        if report_data is not None:
+            clf.report_ = TrainReport(**report_data)
+
+        return clf
