@@ -7,10 +7,10 @@ import numpy as np
 from rapidfuzz.distance import DamerauLevenshtein, JaroWinkler, Levenshtein
 
 from .hf import TokenizerView
-from .script import script_bucket
+from .script import BYTE_LEVEL_FAMILY, SCRIPT_BYTE_GLYPH, script_bucket
 
 FEATURE_SPEC = {
-    "version": 1,
+    "version": 3,
     "names": [
         # Edit-distance family
         "lev_dist",
@@ -30,7 +30,7 @@ FEATURE_SPEC = {
         "casefold_eq",
         "nfkc_eq",
         "nfkd_eq",
-        "stripped_eq",
+        "compare_eq",
         "decoded_eq",
         "decoded_casefold_eq",
         # Marker / script agreement
@@ -38,6 +38,10 @@ FEATURE_SPEC = {
         "both_have_marker",
         "neither_has_marker",
         "same_script",
+        # Byte-glyph stratum signal (residual partial-decode tokens after
+        # the comparison-surface refactor)
+        "both_byte_glyph",
+        "either_byte_glyph",
         # Id proximity
         "id_diff_log",
         # Tokenizer family one-hot (5 keys, mirrors TokenizerView)
@@ -130,7 +134,7 @@ class TokenFeatures:
     - Multiple edit distances (Levenshtein, Damerau, Jaro-Winkler) and ratios
     - Length difference + ratio
     - Longest common prefix / suffix lengths
-    - Marker agreement, decoded-form equality, casefold/NFKC/NFKD/stripped
+    - Marker agreement, decoded-form equality, casefold/NFKC/NFKD/compare
       equality
     - Script agreement
     - Log-id-distance (proxy for BPE merge-rank proximity)
@@ -139,11 +143,19 @@ class TokenFeatures:
 
     view: TokenizerView
 
-    # Compare keys (strings) used for pair-equality features
+    # Comparison surface: the per-token string used for script classification,
+    # edit-distance scoring, canonical-key collapse, and alphabet derivation.
+    # For byte-level BPE tokens whose `decoded` form is well-formed it is the
+    # decoded form; otherwise it is the marker-stripped raw token surface.
+    # `stripped` is kept alongside it for display and bracketed-special-token
+    # filtering
+    compare: list[str]
+    stripped: list[str]
+
+    # Other per-token strings used for pair-equality features
     casefold: list[str]
     nfkc: list[str]
     nfkd: list[str]
-    stripped: list[str]
     decoded: list[str]
     decoded_casefold: list[str]
 
@@ -151,13 +163,13 @@ class TokenFeatures:
     casefold_hash: np.ndarray
     nfkc_hash: np.ndarray
     nfkd_hash: np.ndarray
-    stripped_hash: np.ndarray
+    compare_hash: np.ndarray
     decoded_hash: np.ndarray
     decoded_casefold_hash: np.ndarray
 
     # Numeric features
     len_chars: np.ndarray
-    stripped_len: np.ndarray
+    compare_len: np.ndarray
     script: np.ndarray
     has_marker: np.ndarray
 
@@ -185,18 +197,34 @@ class TokenFeatures:
             names size
         """
         vocab = view.vocab
-        stripped = view.stripped
+        stripped = list(view.stripped)
+        decoded = list(view.decoded)
 
-        casefold = [s.casefold() for s in stripped]
+        # For byte-level BPE tokenizers, the marker-stripped surface form is a
+        # byte-glyph rendering of a UTF-8 byte sequence. When the decoded form
+        # is clean (non-empty, no U+FFFD replacement char), we use it as the
+        # comparison surface so script classification, casefold collapse, and
+        # edit-distance scoring all operating on it rather than the byte
+        # encoding. For other families, or for byte-level tokens whose decoded
+        # form is partial/malformed, we fall back to the stripped surface
+        byte_level = view.family == BYTE_LEVEL_FAMILY
+        if byte_level:
+            compare = [
+                d if d and "\ufffd" not in d else s
+                for s, d in zip(stripped, decoded)
+            ]
+        else:
+            compare = list(stripped)
+
+        casefold = [c.casefold() for c in compare]
         nfkc = [unicodedata.normalize("NFKC", s) for s in stripped]
         nfkd = [unicodedata.normalize("NFKD", s) for s in stripped]
-        decoded = list(view.decoded)
         decoded_casefold = [s.casefold() for s in decoded]
 
         len_chars = np.array([len(t) for t in vocab], dtype=np.int32)
-        stripped_len = np.array([len(s) for s in stripped], dtype=np.int32)
+        compare_len = np.array([len(c) for c in compare], dtype=np.int32)
         script = np.array(
-            [script_bucket(s, view.family) for s in stripped], dtype=np.int8
+            [script_bucket(c, view.family) for c in compare], dtype=np.int8
         )
 
         family_one_hot = view.family_one_hot()
@@ -209,20 +237,21 @@ class TokenFeatures:
 
         return cls(
             view=view,
+            compare=compare,
+            stripped=stripped,
             casefold=casefold,
             nfkc=nfkc,
             nfkd=nfkd,
-            stripped=list(stripped),
             decoded=decoded,
             decoded_casefold=decoded_casefold,
             casefold_hash=_hash_array(casefold),
             nfkc_hash=_hash_array(nfkc),
             nfkd_hash=_hash_array(nfkd),
-            stripped_hash=_hash_array(stripped),
+            compare_hash=_hash_array(compare),
             decoded_hash=_hash_array(decoded),
             decoded_casefold_hash=_hash_array(decoded_casefold),
             len_chars=len_chars,
-            stripped_len=stripped_len,
+            compare_len=compare_len,
             script=script,
             has_marker=view.has_marker.copy(),
             family_one_hot=family_one_hot,
@@ -290,8 +319,8 @@ def pair_features_batch(tf: TokenFeatures, pairs: np.ndarray) -> np.ndarray:
     j = pairs[:, 1]
 
     # Length stats
-    li = tf.stripped_len[i].astype(np.int32, copy=False)
-    lj = tf.stripped_len[j].astype(np.int32, copy=False)
+    li = tf.compare_len[i].astype(np.int32, copy=False)
+    lj = tf.compare_len[j].astype(np.int32, copy=False)
     min_len = np.minimum(li, lj)
     max_len = np.maximum(li, lj)
     len_diff = np.abs(li - lj)
@@ -304,7 +333,7 @@ def pair_features_batch(tf: TokenFeatures, pairs: np.ndarray) -> np.ndarray:
     casefold_eq = tf.casefold_hash[i] == tf.casefold_hash[j]
     nfkc_eq = tf.nfkc_hash[i] == tf.nfkc_hash[j]
     nfkd_eq = tf.nfkd_hash[i] == tf.nfkd_hash[j]
-    stripped_eq = tf.stripped_hash[i] == tf.stripped_hash[j]
+    compare_eq = tf.compare_hash[i] == tf.compare_hash[j]
     decoded_eq = tf.decoded_hash[i] == tf.decoded_hash[j]
     decoded_casefold_eq = (
         tf.decoded_casefold_hash[i] == tf.decoded_casefold_hash[j]
@@ -318,13 +347,25 @@ def pair_features_batch(tf: TokenFeatures, pairs: np.ndarray) -> np.ndarray:
     neither = (~has_i) & (~has_j)
     same_script = tf.script[i] == tf.script[j]
 
+    # Byte-glyph stratum signal: flags pairs that live in the residual
+    # SCRIPT_BYTE_GLYPH bucket (byte-level BPE tokens whose decoded form is
+    # partial / contains U+FFFD). Lets the classifier learn to be more
+    # conservative on within-stratum merges and to reject cross-stratum
+    # pairs that happen to have similar lengths
+    script_i_bg = tf.script[i] == SCRIPT_BYTE_GLYPH
+    script_j_bg = tf.script[j] == SCRIPT_BYTE_GLYPH
+    both_byte_glyph = script_i_bg & script_j_bg
+    either_byte_glyph = script_i_bg | script_j_bg
+
     # Id distance
     ids_i = tf.view.ids[i].astype(np.int64, copy=False)
     ids_j = tf.view.ids[j].astype(np.int64, copy=False)
     id_diff_log = np.log1p(np.abs(ids_i - ids_j))
 
-    # Per-pair edit distances + affix overlaps
-    stripped = tf.stripped
+    # Per-pair edit distances + affix overlaps (operates on the comparison
+    # surface, which for byte-level BPE is the decoded form rather than the
+    # byte-glyph stripped form)
+    compare = tf.compare
     lev_dist = np.empty(n, dtype=np.float32)
     damerau_dist = np.empty(n, dtype=np.float32)
     jaro_winkler = np.empty(n, dtype=np.float32)
@@ -339,7 +380,7 @@ def pair_features_batch(tf: TokenFeatures, pairs: np.ndarray) -> np.ndarray:
 
     max_len_list = max_len.tolist()
     for k, (ii, jj) in enumerate(pairs.tolist()):
-        a, b = stripped[ii], stripped[jj]
+        a, b = compare[ii], compare[jj]
 
         lev_dist[k] = _lev(a, b)
         damerau_dist[k] = _dam(a, b)
@@ -368,7 +409,7 @@ def pair_features_batch(tf: TokenFeatures, pairs: np.ndarray) -> np.ndarray:
     _set_col(out, "casefold_eq", casefold_eq.astype(np.float32))
     _set_col(out, "nfkc_eq", nfkc_eq.astype(np.float32))
     _set_col(out, "nfkd_eq", nfkd_eq.astype(np.float32))
-    _set_col(out, "stripped_eq", stripped_eq.astype(np.float32))
+    _set_col(out, "compare_eq", compare_eq.astype(np.float32))
     _set_col(out, "decoded_eq", decoded_eq.astype(np.float32))
     _set_col(
         out, "decoded_casefold_eq", decoded_casefold_eq.astype(np.float32)
@@ -378,6 +419,9 @@ def pair_features_batch(tf: TokenFeatures, pairs: np.ndarray) -> np.ndarray:
     _set_col(out, "both_have_marker", both.astype(np.float32))
     _set_col(out, "neither_has_marker", neither.astype(np.float32))
     _set_col(out, "same_script", same_script.astype(np.float32))
+
+    _set_col(out, "both_byte_glyph", both_byte_glyph.astype(np.float32))
+    _set_col(out, "either_byte_glyph", either_byte_glyph.astype(np.float32))
 
     _set_col(out, "id_diff_log", id_diff_log.astype(np.float32))
 
