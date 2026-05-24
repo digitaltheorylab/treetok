@@ -7,10 +7,10 @@ import numpy as np
 from rapidfuzz.distance import DamerauLevenshtein, JaroWinkler, Levenshtein
 
 from .hf import TokenizerView
-from .script import BYTE_LEVEL_FAMILY, script_bucket
+from .script import BYTE_LEVEL_FAMILY, SCRIPT_BYTE_GLYPH, script_bucket
 
 FEATURE_SPEC = {
-    "version": 2,
+    "version": 3,
     "names": [
         # Edit-distance family
         "lev_dist",
@@ -38,6 +38,10 @@ FEATURE_SPEC = {
         "both_have_marker",
         "neither_has_marker",
         "same_script",
+        # Byte-glyph stratum signal (residual partial-decode tokens after
+        # the comparison-surface refactor)
+        "both_byte_glyph",
+        "either_byte_glyph",
         # Id proximity
         "id_diff_log",
         # Tokenizer family one-hot (5 keys, mirrors TokenizerView)
@@ -343,6 +347,16 @@ def pair_features_batch(tf: TokenFeatures, pairs: np.ndarray) -> np.ndarray:
     neither = (~has_i) & (~has_j)
     same_script = tf.script[i] == tf.script[j]
 
+    # Byte-glyph stratum signal: flags pairs that live in the residual
+    # SCRIPT_BYTE_GLYPH bucket (byte-level BPE tokens whose decoded form is
+    # partial / contains U+FFFD). Lets the classifier learn to be more
+    # conservative on within-stratum merges and to reject cross-stratum
+    # pairs that happen to have similar lengths
+    script_i_bg = tf.script[i] == SCRIPT_BYTE_GLYPH
+    script_j_bg = tf.script[j] == SCRIPT_BYTE_GLYPH
+    both_byte_glyph = script_i_bg & script_j_bg
+    either_byte_glyph = script_i_bg | script_j_bg
+
     # Id distance
     ids_i = tf.view.ids[i].astype(np.int64, copy=False)
     ids_j = tf.view.ids[j].astype(np.int64, copy=False)
@@ -405,6 +419,9 @@ def pair_features_batch(tf: TokenFeatures, pairs: np.ndarray) -> np.ndarray:
     _set_col(out, "both_have_marker", both.astype(np.float32))
     _set_col(out, "neither_has_marker", neither.astype(np.float32))
     _set_col(out, "same_script", same_script.astype(np.float32))
+
+    _set_col(out, "both_byte_glyph", both_byte_glyph.astype(np.float32))
+    _set_col(out, "either_byte_glyph", either_byte_glyph.astype(np.float32))
 
     _set_col(out, "id_diff_log", id_diff_log.astype(np.float32))
 
