@@ -537,7 +537,7 @@ class MergeClassifier:
             "params": self.params,
             "booster": booster_json,
         }
-        path.write_text(json.dumps(payload), encoding="utf-8")
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     @classmethod
     def load(cls, path: str | Path) -> "MergeClassifier":
