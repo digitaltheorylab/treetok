@@ -45,8 +45,10 @@ def _pick_pr_idx(precision, recall, target_precision):
     """Pick a PR-curve index subject to a precision constraint.
 
     Selects the index with the highest recall among those with `precision` >=
-    `target_precision`. If no index satisfies the constraint, falls back to the
-    index with the best F1
+    `target_precision`. If no index satisfies the constraint, maximize
+    precision, then recall.
+
+    Tie breaking: select first occurrence of max recall.
 
     Parameters
     ----------
@@ -66,18 +68,25 @@ def _pick_pr_idx(precision, recall, target_precision):
     if n == 0:
         return 0
 
-    best_recall = np.where(precision >= target_precision, recall, -np.inf)
-    idx = np.argmax(best_recall)
-    if np.isfinite(best_recall[idx]):
+    valid = precision >= target_precision
+    if np.any(valid):
+        best_recall = np.where(valid, recall, -np.inf)
+        idx = np.argmax(best_recall)
+
         return int(idx)
 
-    f1 = 2 * precision * recall / np.clip(precision + recall, 1e-12, None)
+    max_p = np.max(precision)
+    tied = np.flatnonzero(np.isclose(precision, max_p))
+    if len(tied) == 1:
+        return int(tied[0])
 
-    return int(np.argmax(f1))
+    idx = np.argmax(recall[tied])
+
+    return int(tied[idx])
 
 
 def _precision_recall_curve(y_true, y_score):
-    """Compute a precision-recall curve.
+    """Compute a precision-recall curve over unique thresholds.
 
     Parameters
     ----------
@@ -91,27 +100,47 @@ def _precision_recall_curve(y_true, y_score):
     tuple[np.ndarray, np.ndarray, np.ndarray]
         Precision, recall, and thresholds, where thresholds are sorted in
         descending order
+
+    Raises
+    ------
+    ValueError
+        If `y_true` or `y_score` are not 1D arrays or the two arrays aren't the
+        same length
     """
     y_true = np.asarray(y_true, dtype=np.int8)
     y_score = np.asarray(y_score, dtype=np.float64)
+
+    if y_true.ndim != 1 or y_score.ndim != 1 or len(y_true) != len(y_score):
+        raise ValueError("y_true and y_score must be equal-length 1D arrays")
+
+    if len(y_true) == 0:
+        return np.array([1.0]), np.array([0.0]), np.array([], dtype=np.float64)
 
     order = np.argsort(-y_score, kind="stable")
     y = y_true[order]
     s = y_score[order]
 
-    # Cumulative TP/FP at each prefix; threshold is the score at a prefix
+    n_pos = np.sum(y == 1)
+
+    # Cumulative counts at each sorted position
     tp = np.cumsum(y == 1)
     fp = np.cumsum(y == 0)
-    n_pos = np.sum(y_true == 1)
 
-    precision = tp / np.clip(tp + fp, 1, None)
-    recall = tp / max(n_pos, 1)
+    # Keep only last occurrence of each unique score
+    distinct = np.r_[s[1:] != s[:-1], True]
+
+    tp_u = tp[distinct]
+    fp_u = fp[distinct]
+    thresholds = s[distinct]
+
+    precision = tp_u / np.clip(tp_u + fp_u, 1, None)
+    recall = tp_u / max(n_pos, 1)
 
     # Append a trailing sentinel point
     precision = np.concatenate([precision, [1.0]])
     recall = np.concatenate([recall, [0.0]])
 
-    return precision, recall, s
+    return precision, recall, thresholds
 
 
 def _stratified_split(X, y, val_size, random_state):
