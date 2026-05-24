@@ -30,7 +30,7 @@ DEFAULT_BATCH_SIZE = 50_000
 _Q_CHUNK = 1024
 
 
-def _length_aware_max_dist(stripped_len: int) -> int:
+def _length_aware_max_dist(token_len: int) -> int:
     """Return the max edit distance allowed for a given token length.
 
     `min(MAX_DIST_CEILING, ceil(0.4 * len))`: short tokens only match
@@ -38,30 +38,32 @@ def _length_aware_max_dist(stripped_len: int) -> int:
 
     Parameters
     ----------
-    stripped_len : int
-        Length of the stripped token form
+    token_len : int
+        Length of the token on the comparison surface
 
     Returns
     -------
     int
         Maximum Levenshtein distance cutoff for this length
     """
-    if stripped_len < MIN_LEN:
+    if token_len < MIN_LEN:
         return 0
 
-    return min(MAX_DIST_CEILING, max(1, math.ceil(0.4 * stripped_len)))
+    return min(MAX_DIST_CEILING, max(1, math.ceil(0.4 * token_len)))
 
 
 def _eligible_mask(tf: TokenFeatures) -> np.ndarray:
     """Return a boolean mask of tokens eligible for clustering.
 
     Excluded:
-    - Stripped length below `MIN_LEN`
+    - Comparison-surface length below `MIN_LEN`
     - Special tokens, added tokens
-    - Bracket-wrapped reserved slots (e.g. BERT's `[unused0]`..`[unusedN]`)
+    - Bracket-wrapped reserved slots (e.g. BERT's `[unused0]`..`[unusedN]`).
+      Detected on `view.stripped` because the bracketing convention is part
+      of the raw token surface, independent of the byte-level decode pass
     """
     view = tf.view
-    mask = tf.stripped_len >= MIN_LEN
+    mask = tf.compare_len >= MIN_LEN
 
     ids = view.ids
     skip_ids = view.special_token_ids | view.added_token_ids
@@ -85,7 +87,7 @@ def _eligible_mask(tf: TokenFeatures) -> np.ndarray:
 def _stratify(
     tf: TokenFeatures, base_mask: np.ndarray
 ) -> dict[tuple[int, bool, int], list[int]]:
-    """Group token indices by (script, has_marker, stripped_length).
+    """Group token indices by (script, has_marker, compare_length).
 
     Parameters
     ----------
@@ -101,14 +103,14 @@ def _stratify(
     """
     has_marker = tf.has_marker
     script = tf.script
-    stripped_len = tf.stripped_len
+    compare_len = tf.compare_len
 
     strata = defaultdict(list)
     for idx in np.flatnonzero(base_mask):
         key = (
             int(script[idx]),
             bool(has_marker[idx]),
-            int(stripped_len[idx]),
+            int(compare_len[idx]),
         )
         strata[key].append(idx)
 
@@ -147,9 +149,9 @@ def _cdist_pairs(
     if not queries or not choices:
         return None
 
-    stripped = tf.stripped
-    q_strs = [stripped[g] for g in queries]
-    c_strs = [stripped[g] for g in choices]
+    compare = tf.compare
+    q_strs = [compare[g] for g in queries]
+    c_strs = [compare[g] for g in choices]
     q_arr = np.asarray(queries, dtype=np.int64)
     c_arr = np.asarray(choices, dtype=np.int64)
 

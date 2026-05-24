@@ -189,15 +189,15 @@ def _vocab_index(view: TokenizerView) -> dict[str, int]:
 
 
 def _derive_alphabets(
-    view: TokenizerView, final_cap: int = 64
+    tf: TokenFeatures, final_cap: int = 64
 ) -> dict[int, str]:
     """Build per-script noising alphabets for hard-negative generation.
 
     For each alphabetic script, the output alphabet is the script's canonical
     core (see `CANONICAL_CORES`) followed by the most frequent additional
-    characters observed in the tokenizer vocabulary, truncated to `final_cap`.
-    The core is always included so low-frequency core letters are never 
-    dropped when a tokenizer happens to undersample them
+    characters observed on the tokenizer's comparison surface, truncated to
+    `final_cap`. The core is always included so low-frequency core letters
+    are never dropped when a tokenizer happens to undersample them
 
     Non-alphabetic scripts (CJK, OTHER) are omitted from the result. Callers
     should treat a missing key as "skip the character-insertion loop" rather
@@ -205,8 +205,10 @@ def _derive_alphabets(
 
     Parameters
     ----------
-    view : TokenizerView
-        Tokenizer snapshot
+    tf : TokenFeatures
+        Precomputed per-token cache (frequency counting walks `tf.compare`,
+        so byte-level BPE tokens contribute their decoded forms when those
+        round-trip cleanly)
     final_cap : int
         Maximum number of characters per alphabet, including the core. Bounds
         the per-token partner-generation work in the hard-negative miner
@@ -219,9 +221,9 @@ def _derive_alphabets(
         canonical order), followed by vocabulary-derived augmentations in
         descending frequency
     """
-    family = view.family
+    family = tf.view.family
     freq = defaultdict(Counter)
-    for s in view.stripped:
+    for s in tf.compare:
         for c in s:
             if not c.isalpha():
                 continue
@@ -353,7 +355,7 @@ def hard_negatives(
     pool_cap = max(target * 8, 50_000)
 
     cf = tf.casefold
-    stripped = tf.stripped
+    compare = tf.compare
     decoded = tf.decoded
 
     pool = []
@@ -366,7 +368,7 @@ def hard_negatives(
             continue
 
         if (
-            stripped[i] == stripped[j]
+            compare[i] == compare[j]
             or cf[i] == cf[j]
             or decoded[i] == decoded[j]
         ):
@@ -430,14 +432,15 @@ def _explicit_edit_negatives(
     """
     view = tf.view
     vi = {t: i for i, t in enumerate(view.vocab)}
-    alphabets = _derive_alphabets(view)
+    alphabets = _derive_alphabets(tf)
 
     out = []
 
     cf = tf.casefold
+    compare = tf.compare
 
     eligible_idx = [
-        i for i, n in enumerate(tf.stripped_len) if 3 <= int(n) <= max_len
+        i for i, n in enumerate(tf.compare_len) if 3 <= int(n) <= max_len
     ]
     rng.shuffle(eligible_idx)
 
@@ -446,9 +449,11 @@ def _explicit_edit_negatives(
     punct_prefixes = ("-", "_", ".", "<", "\\", "$", "[", "=", "/", "(", ",")
 
     # Build a suffix index used for shared-suffix negatives, e.g. "traction" /
-    # "<Action>" / "ivation" all share suffix "tion"/"ction"
+    # "<Action>" / "ivation" all share suffix "tion"/"ction". The buckets key
+    # on the comparison surface so byte-level BPE tokens share suffixes by
+    # their decoded form rather than by their byte-glyph encoding
     suffix_idx = defaultdict(list)
-    for i, s in enumerate(view.stripped):
+    for i, s in enumerate(compare):
         if not (3 <= len(s) <= max_len):
             continue
 
@@ -457,7 +462,7 @@ def _explicit_edit_negatives(
         suffix_idx[s[-4:].lower() if len(s) >= 4 else s.lower()].append(i)
 
     for i in eligible_idx[:8_000]:
-        s = view.stripped[i]
+        s = compare[i]
         partners: list[str] = []
 
         # Single-char head/tail edits
@@ -578,7 +583,7 @@ def easy_negatives(
         # Reject pairs that are too similar (length within 1 char and share
         # script + marker). Those belong to the hard-neg pool
         if (
-            abs(int(tf.stripped_len[i]) - int(tf.stripped_len[j])) <= 1
+            abs(int(tf.compare_len[i]) - int(tf.compare_len[j])) <= 1
             and tf.script[i] == tf.script[j]
             and tf.has_marker[i] == tf.has_marker[j]
         ):
