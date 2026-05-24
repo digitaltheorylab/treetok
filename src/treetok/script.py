@@ -53,9 +53,7 @@ def _build_byte_glyph_set() -> frozenset[str]:
 
     # Exclude the ASCII-printable range (0x21..0x7E); those map to themselves
     # and overlap with genuine Latin tokens. Keep everything else
-    return frozenset(
-        chr(c) for b, c in zip(bs, cs) if not (0x21 <= b <= 0x7E)
-    )
+    return frozenset(chr(c) for b, c in zip(bs, cs) if not (0x21 <= b <= 0x7E))
 
 
 # Characters that GPT-2 / Qwen3-style byte-level BPE uses to encode raw bytes
