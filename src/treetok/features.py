@@ -42,8 +42,6 @@ FEATURE_SPEC = {
         # the comparison-surface refactor)
         "both_byte_glyph",
         "either_byte_glyph",
-        # Id proximity
-        "id_diff_log",
         # Tokenizer family one-hot (5 keys, mirrors TokenizerView)
         "family_byte_level_bpe",
         "family_sentencepiece",
@@ -357,11 +355,6 @@ def pair_features_batch(tf: TokenFeatures, pairs: np.ndarray) -> np.ndarray:
     both_byte_glyph = script_i_bg & script_j_bg
     either_byte_glyph = script_i_bg | script_j_bg
 
-    # Id distance
-    ids_i = tf.view.ids[i].astype(np.int64, copy=False)
-    ids_j = tf.view.ids[j].astype(np.int64, copy=False)
-    id_diff_log = np.log1p(np.abs(ids_i - ids_j))
-
     # Per-pair edit distances + affix overlaps (operates on the comparison
     # surface, which for byte-level BPE is the decoded form rather than the
     # byte-glyph stripped form)
@@ -422,8 +415,6 @@ def pair_features_batch(tf: TokenFeatures, pairs: np.ndarray) -> np.ndarray:
 
     _set_col(out, "both_byte_glyph", both_byte_glyph.astype(np.float32))
     _set_col(out, "either_byte_glyph", either_byte_glyph.astype(np.float32))
-
-    _set_col(out, "id_diff_log", id_diff_log.astype(np.float32))
 
     # Family one-hot is identical for every pair from the same TokenizerView
     fam = tf.family_one_hot.astype(np.float32, copy=False)
