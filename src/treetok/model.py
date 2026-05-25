@@ -258,7 +258,12 @@ class MergeClassifier:
             else FEATURE_SPEC["names"]
         )
 
-        self.params = params if params is not None else self._default_params()
+        # Get default parameters, then update with any user-supplied ones
+        base_params = self._default_params()
+        if params is not None:
+            base_params.update(params)
+
+        self.params = base_params
 
         # Initialization defaults; learned values are stored with `_`
         self.edge_threshold = edge_threshold
