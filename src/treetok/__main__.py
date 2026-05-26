@@ -25,6 +25,17 @@ def setup_logging():
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
+def _add_trust_remote_code_flag(parser: argparse.ArgumentParser) -> None:
+    """Add flag for trust remote code."""
+    parser.add_argument(
+        "--no-trust-remote-code",
+        action="store_false",
+        dest="trust_remote_code",
+        help="Disable Hugging Face trust_remote_code",
+    )
+    parser.set_defaults(trust_remote_code=True)
+
+
 def _cmd_inspect(args: argparse.Namespace) -> int:
     """Run the `inspect` subcommand.
 
@@ -36,7 +47,10 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
 
     from .hf import inspect
 
-    view = inspect(args.model)
+    view = inspect(
+        args.model,
+        tokenizer_kwargs={"trust_remote_code": args.trust_remote_code},
+    )
     payload = {
         "model_name": view.model_name,
         "family": view.family,
@@ -68,7 +82,11 @@ def _cmd_build_dataset(args: argparse.Namespace) -> int:
         n_easy_negatives=args.n_easy_negatives,
         seed=args.seed,
     )
-    table = build_dataset(args.model, cfg)
+    table = build_dataset(
+        args.model,
+        cfg,
+        tokenizer_kwargs={"trust_remote_code": args.trust_remote_code},
+    )
     write_dataset(table, args.output)
     logger.info(
         "wrote %d rows to %s (model=%s)",
@@ -159,6 +177,7 @@ def _cmd_cluster(args: argparse.Namespace) -> int:
         top_k=args.top_k,
         batch_size=args.batch_size,
         n_jobs=args.n_jobs,
+        tokenizer_kwargs={"trust_remote_code": args.trust_remote_code},
     )
 
     if not args.quiet:
@@ -198,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_inspect = sub.add_parser("inspect", help="Show tokenizer metadata")
     p_inspect.add_argument("model", type=str)
+    _add_trust_remote_code_flag(p_inspect)
     p_inspect.set_defaults(func=_cmd_inspect)
 
     p_data = sub.add_parser(
@@ -212,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
     p_data.add_argument("--n-hard-negatives", type=int, default=5000)
     p_data.add_argument("--n-easy-negatives", type=int, default=2000)
     p_data.add_argument("--seed", type=int, default=0)
+    _add_trust_remote_code_flag(p_data)
     p_data.set_defaults(func=_cmd_build_dataset)
 
     p_train = sub.add_parser("train", help="Train the merge classifier")
@@ -285,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     p_cluster.add_argument(
         "-q", "--quiet", action="store_true", help="Skip stdout pretty-print"
     )
+    _add_trust_remote_code_flag(p_cluster)
     p_cluster.set_defaults(func=_cmd_cluster)
 
     args = parser.parse_args(argv)
