@@ -595,7 +595,9 @@ def easy_negatives(
 
 
 def build_dataset(
-    model_name: str, cfg: DatasetConfig | None = None
+    model_name: str,
+    cfg: DatasetConfig | None = None,
+    tokenizer_kwargs: dict | None = None,
 ) -> pa.Table:
     """Construct a labeled training table for one tokenizer.
 
@@ -617,6 +619,8 @@ def build_dataset(
         HuggingFace model identifier
     cfg : DatasetConfig or None
         Dataset construction settings
+    tokenizer_kwargs : dict or None
+        Tokenizer keyword arguments
 
     Returns
     -------
@@ -626,7 +630,7 @@ def build_dataset(
     cfg = cfg or DatasetConfig()
     rng = random.Random(cfg.seed)
 
-    view = inspect(model_name)
+    view = inspect(model_name, tokenizer_kwargs=tokenizer_kwargs)
     tf = TokenFeatures.from_view(view)
 
     pos = synthetic_positives(tf, cfg, rng)

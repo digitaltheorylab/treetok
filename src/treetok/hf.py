@@ -83,19 +83,22 @@ class TokenizerView:
         return oh
 
 
-def inspect(model_name: str) -> TokenizerView:
+def inspect(model_name: str, **tokenizer_kwargs: dict | None) -> TokenizerView:
     """Load a tokenizer and return a `TokenizerView`.
 
     Parameters
     ----------
     model_name : str
         Hugging Face model identifier
+    tokenizer_kwargs : dict or None
+        Tokenizer keywords arguments
 
     Returns
     -------
     TokenizerView
     """
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer_kwargs = tokenizer_kwargs or {}
+    tokenizer = AutoTokenizer.from_pretrained(model_name, **tokenizer_kwargs)
 
     # Sort by id so list position == id position
     items = sorted(tokenizer.get_vocab().items(), key=lambda kv: kv[1])

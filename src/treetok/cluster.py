@@ -532,32 +532,35 @@ def cluster_vocab(
     top_k: int | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     n_jobs: int = DEFAULT_N_JOBS,
+    tokenizer_kwargs: dict | None = None,
 ) -> list[ClusterInfo]:
     """Inspect a tokenizer, build features, and cluster.
 
     Parameters
     ----------
     model_name : str
-        HuggingFace model identifier.
+        HuggingFace model identifier
     classifier : MergeClassifier
         Fitted classifier.
     edge_threshold : float | None
-        Override for the classifier's tuned edge threshold.
+        Override for the classifier's tuned edge threshold
     merge_threshold : float | None
-        Override for the classifier's tuned merge threshold.
+        Override for the classifier's tuned merge threshold
     top_k : int | None
-        Return only the top-k clusters by member count.
+        Return only the top-k clusters by member count
     batch_size : int
-        Batch size for generating candidate pairs.
+        Batch size for generating candidate pairs
     n_jobs : int
-        Number of threads to use.
+        Number of threads to use
+    tokenizer_kwargs : dict or None
+        Tokenizer keyword arguments
 
     Returns
     -------
     list[ClusterInfo]
         Clusters.
     """
-    view = inspect(model_name)
+    view = inspect(model_name, tokenizer_kwargs=tokenizer_kwargs)
     tf = TokenFeatures.from_view(view)
     clusters = cluster_view(
         tf,
