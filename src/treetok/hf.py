@@ -270,10 +270,16 @@ def _decode_each(tokenizer, vocab: list[str]) -> list[str]:
         if convert is None:
             out.append(t)
             continue
+
         try:
-            out.append(convert([t]))
+            d = convert([t])
         except Exception:
-            out.append(t)
+            d = t
+
+        if not isinstance(d, str):
+            d = t if isinstance(t, str) else str(t)
+
+        out.append(d)
 
     return out
 
