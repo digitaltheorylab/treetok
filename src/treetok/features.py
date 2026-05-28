@@ -256,22 +256,6 @@ class TokenFeatures:
         )
 
 
-def _alloc_out(n: int) -> np.ndarray:
-    """Allocate an output feature matrix.
-
-    Parameters
-    ----------
-    n : int
-        Number of rows (pairs)
-
-    Returns
-    -------
-    np.ndarray
-        Shape (n, n_features) float32 matrix
-    """
-    return np.empty((n, len(_FEATURE_NAMES)), dtype=np.float32)
-
-
 def _set_col(out: np.ndarray, name: str, values) -> None:
     """Assign a full column by feature name.
 
@@ -308,8 +292,10 @@ def pair_features_batch(tf: TokenFeatures, pairs: np.ndarray) -> np.ndarray:
         Shape (n, n_features) float32 matrix in FEATURE_SPEC order
     """
     pairs = np.asarray(pairs, dtype=np.int64)
+
+    # Allocate an output feature matrix of shape (n, n_features)
     n = len(pairs)
-    out = _alloc_out(n)
+    out = np.empty((n, len(_FEATURE_NAMES)), dtype=np.float32)
     if n == 0:
         return out
 
