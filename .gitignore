@@ -10,3 +10,6 @@ __pycache__/
 # Whitelist model
 data/*
 !data/model.json
+
+# Nix
+.direnv/
