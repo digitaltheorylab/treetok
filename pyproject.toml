@@ -15,6 +15,9 @@ version = "0.2.0"
 build-backend = "hatchling.build"
 requires = ["hatchling"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"data/model.json" = "treetok/data/model.json"
+
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64", "osx-arm64"]
