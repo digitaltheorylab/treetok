@@ -71,7 +71,11 @@ Two operating thresholds are tuned on a held-out validation split:
 Clustering runs in three stages:
 
 1. Canonical grouping using a conservative key (script + casefolded stripped
-   form). This collapses obvious variants without a classifier call
+   form). This collapses obvious variants without a classifier call. It uses
+   its own, lower length floor (`canonical_min_len`, default 2) than the
+   scoring stages below, because it buckets on an exact key and scores no
+   pairs, so it has none of the pair-count blowup or edit-distance concerns
+   that keep the scoring floor at 3
 2. Anchor expansion: score only anchor-to-unassigned candidates and assign each
    token to at most one anchor
 3. Fallback union: for remaining tokens, score candidate edges and do a
