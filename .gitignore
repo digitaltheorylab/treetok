@@ -13,3 +13,7 @@ data/*
 
 # Nix
 .direnv/
+
+# Birds
+.birds/
+.birds/manifest.toml

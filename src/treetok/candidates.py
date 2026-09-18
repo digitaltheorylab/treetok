@@ -52,18 +52,18 @@ def _length_aware_max_dist(token_len: int) -> int:
     return min(MAX_DIST_CEILING, max(1, math.ceil(0.4 * token_len)))
 
 
-def _eligible_mask(tf: TokenFeatures) -> np.ndarray:
+def _eligible_mask(tf: TokenFeatures, *, min_len: int = MIN_LEN) -> np.ndarray:
     """Return a boolean mask of tokens eligible for clustering.
 
     Excluded:
-    - Comparison-surface length below `MIN_LEN`
+    - Comparison-surface length below `min_len`, defaulting to `MIN_LEN`
     - Special tokens, added tokens
     - Bracket-wrapped reserved slots (e.g. BERT's `[unused0]`..`[unusedN]`).
       Detected on `view.stripped` because the bracketing convention is part
       of the raw token surface, independent of the byte-level decode pass
     """
     view = tf.view
-    mask = tf.compare_len >= MIN_LEN
+    mask = tf.compare_len >= min_len
 
     ids = view.ids
     skip_ids = view.special_token_ids | view.added_token_ids

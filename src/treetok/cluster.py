@@ -118,13 +118,22 @@ def _canonical_key(tf: TokenFeatures, idx: int) -> tuple[int, str]:
 
 def _anchor_groups(
     tf: TokenFeatures,
+    *,
+    min_len: int = 2,
 ) -> tuple[dict[int, list[int]], np.ndarray]:
     """Group eligible tokens by canonical key.
+
+    Step 1 can afford a lower length floor than the scoring stages: it
+    buckets tokens on an exact canonical key and scores no pairs, so it has
+    none of the combinatorial-blowup or edit-distance-discrimination concerns
+    that keep `MIN_LEN` at 3 for candidate generation.
 
     Parameters
     ----------
     tf : TokenFeatures
         Precomputed per-token cache
+    min_len : int
+        Comparison-surface length floor for canonical bucketing
 
     Returns
     -------
@@ -134,7 +143,7 @@ def _anchor_groups(
         - `anchored_mask` is True for every token that ended up in a
           non-singleton canonical bucket (the anchor and its co-members)
     """
-    elig = _eligible_mask(tf)
+    elig = _eligible_mask(tf, min_len=min_len)
     n = tf.view.vocab_size
 
     buckets = defaultdict(list)
@@ -386,6 +395,7 @@ def cluster_view(
     merge_threshold: float | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     n_jobs: int = DEFAULT_N_JOBS,
+    canonical_min_len: int = 2,
 ) -> list[ClusterInfo]:
     """Run the three-step clustering pipeline on a TokenFeatures pack.
 
@@ -426,6 +436,10 @@ def cluster_view(
         Batch size for generating candidate pairs
     n_jobs : int
         Number of threads to use
+    canonical_min_len : int
+        Comparison-surface length floor for step 1's canonical bucketing.
+        Lower than the scoring-stage floor (`MIN_LEN`, 3) by default because
+        step 1 scores no pairs
 
     Returns
     -------
@@ -446,7 +460,7 @@ def cluster_view(
     view = tf.view
 
     # Step 1: canonical anchor groups
-    groups, anchored = _anchor_groups(tf)
+    groups, anchored = _anchor_groups(tf, min_len=canonical_min_len)
 
     # Step 2: extend anchors with classifier-scored neighbors
     groups = _anchor_pass(
@@ -533,6 +547,7 @@ def cluster_vocab(
     batch_size: int = DEFAULT_BATCH_SIZE,
     n_jobs: int = DEFAULT_N_JOBS,
     tokenizer_kwargs: dict | None = None,
+    canonical_min_len: int = 2,
 ) -> list[ClusterInfo]:
     """Inspect a tokenizer, build features, and cluster.
 
@@ -554,6 +569,10 @@ def cluster_vocab(
         Number of threads to use
     tokenizer_kwargs : dict or None
         Tokenizer keyword arguments
+    canonical_min_len : int
+        Comparison-surface length floor for step 1's canonical bucketing.
+        Lower than the scoring-stage floor (`MIN_LEN`, 3) by default because
+        step 1 scores no pairs
 
     Returns
     -------
@@ -569,6 +588,7 @@ def cluster_vocab(
         merge_threshold=merge_threshold,
         batch_size=batch_size,
         n_jobs=n_jobs,
+        canonical_min_len=canonical_min_len,
     )
     if top_k is not None:
         clusters = clusters[:top_k]
