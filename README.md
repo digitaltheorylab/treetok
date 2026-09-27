@@ -63,6 +63,8 @@ python -m treetok cluster gpt2 --classifier model.json -k 25 -o clusters.json
 - [Gemma 4 EB](https://huggingface.co/google/gemma-4-E4B)
 - [Ministral 3 8B](https://huggingface.co/mistralai/Ministral-3-8B-Base-2512)
 - [Qwen 3.5 9B](https://huggingface.co/Qwen/Qwen3.5-9B)
+- [BERT base (uncased)](https://huggingface.co/google-bert/bert-base-uncased)
+- [XLM-RoBERTa ](https://huggingface.co/FacebookAI/xlm-roberta-base)
 
 Your mileage may vary with this model. For best performance, train one on your
 own tokenizer(s). See the [training guide](docs/training.md).
