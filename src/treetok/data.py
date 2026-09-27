@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+from rapidfuzz.distance import JaroWinkler
 
 from .candidates import _eligible_mask, iter_pairs
 from .features import (
@@ -127,6 +128,39 @@ def _norm_variants(s: str) -> list[str]:
     return list(out)
 
 
+def _byte_level_case_variants(s: str) -> list[str]:
+    """Return case variants for a byte-level BPE token surface.
+
+    Case maps must run on the decoded text, not the byte-glyph rendering:
+    toggling case of a glyph flips the underlying raw byte (e.g.
+    upper("\u00d1\u0129") == "\u00d1\u0128" turns Cyrillic "\u0447" into
+    "\u0446"), which previously produced false mojibake positives like
+    "\u0447\u0430\u0441" <-> "\u0446\u0430\u0440"
+
+    A leading space (the decoded marker) is held out of the case transform so
+    `str.capitalize` and first-char toggles act on the word core
+
+    Parameters
+    ----------
+    s : str
+        Token string on the byte-glyph surface
+
+    Returns
+    -------
+    list[str]
+        Glyph-surface variants; empty when `s` is not cleanly decodable
+    """
+    text = decode_byte_glyphs(s)
+    if text is None:
+        return []
+
+    prefix, core = ("", text)
+    if core.startswith(" "):
+        prefix, core = " ", core[1:]
+
+    return [encode_byte_glyphs(prefix + v) for v in _case_variants(core)]
+
+
 def _byte_level_norm_variants(s: str) -> list[str]:
     """Return NFKC/NFKD variants for a byte-level BPE token surface.
 
@@ -218,18 +252,21 @@ def _candidate_partners(
     toggle_markers = marker_policy == "merge"
     byte_level = view.family == BYTE_LEVEL_FAMILY
 
+    # Case and normalization transforms are meaningful on text, not on
+    # byte-glyph renderings; for byte-level BPE, decode -> transform ->
+    # re-encode
+    case_fn = _byte_level_case_variants if byte_level else _case_variants
+
     seeds = [s]
     if toggle_markers:
         seeds.extend(_toggle_marker(s, view))
 
-    seeds.extend(_case_variants(s))
+    seeds.extend(case_fn(s))
 
     pool = set()
     for seed in seeds:
-        pool.update(_case_variants(seed))
+        pool.update(case_fn(seed))
 
-        # Normalization variants are meaningful on text, not on byte-glyph
-        # renderings; for byte-level BPE, decode -> normalize -> re-encode
         if byte_level:
             pool.update(_byte_level_norm_variants(seed))
         else:
@@ -478,9 +515,32 @@ def hard_negatives(
             seen.add(key)
             pool.append(key)
 
+    # Bias selection toward the confusable frontier: uniform sampling dilutes
+    # high-similarity negatives, letting edge-punct positives dominate the
+    # high Jaro-Winkler region and teaching the model "high JW = merge"
+    # (observed as false merges like "\u2581sport" <-> "\u2581sortu" on
+    # multilingual vocabularies). Spend half the budget on the highest-JW
+    # pairs, the rest uniformly
     rng.shuffle(pool)
+    if len(pool) <= target:
+        return pool
 
-    return pool[:target]
+    jw = JaroWinkler.similarity
+    scores = [jw(compare[i], compare[j]) for i, j in pool]
+    order = sorted(range(len(pool)), key=lambda k: -scores[k])
+
+    half = target // 2
+    taken = set(order[:half])
+    out = [pool[k] for k in order[:half]]
+    for k in range(len(pool)):
+        if len(out) >= target:
+            break
+        if k in taken:
+            continue
+
+        out.append(pool[k])
+
+    return out
 
 
 def _marker_toggle_negatives(
