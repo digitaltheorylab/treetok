@@ -12,6 +12,11 @@ N_HARD=24000
 N_EASY=2000
 SEED=0
 
+# Marker-variant semantics: "merge" (marker toggles are positives) or
+# "separate" (marker toggles are hard negatives). Recorded in the datasets
+# and picked up automatically by `treetok train`
+MARKER_POLICY="merge"
+
 # Preferred training hyperparameters
 VAL_SIZE=0.5
 TARGET_PRECISION=0.95
@@ -32,7 +37,8 @@ for model filename in "${(@kv)MODELS}"; do
     --n-positives "$N_POS" \
     --n-hard-negatives "$N_HARD" \
     --n-easy-negatives "$N_EASY" \
-    --seed "$SEED"
+    --seed "$SEED" \
+    --marker-policy "$MARKER_POLICY"
 done
 
 python -m treetok train ${OUTDIR}*.parquet -o "${OUTDIR}${CLF}" \
