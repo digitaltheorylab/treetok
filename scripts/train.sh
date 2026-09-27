@@ -25,11 +25,13 @@ MERGE_TARGET_PRECISION=0.999
 MERGE_THRESHOLD_FLOOR=0.5
 
 typeset -A MODELS=(
-  answerdotai/ModernBERT-base             bert.parquet
+  answerdotai/ModernBERT-base             modernbert.parquet
   allenai/Olmo-3-1025-7B                  olmo.parquet
   google/gemma-4-E4B                      gemma.parquet
   mistralai/Ministral-3-8B-Base-2512      mistral.parquet
   Qwen/Qwen3.5-9B                         qwen.parquet
+  google-bert/bert-base-uncased           bert-wordpiece.parquet
+  facebookAI/xlm-roberta-base             xlmr.parquet
 )
 
 for model filename in "${(@kv)MODELS}"; do

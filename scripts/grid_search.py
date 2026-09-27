@@ -29,12 +29,16 @@ from treetok import (
 )
 from treetok.cluster import clusters_to_jsonable
 
+# Family balance: 4x byte-level BPE, 2x SentencePiece (gemma + multilingual
+# xlm-roberta for script coverage), 1x WordPiece
 TRAIN_MODELS: list[tuple[str, str]] = [
-    ("answerdotai/ModernBERT-base", "bert.parquet"),
+    ("answerdotai/ModernBERT-base", "modernbert.parquet"),
     ("allenai/Olmo-3-1025-7B", "olmo.parquet"),
     ("google/gemma-4-E4B", "gemma.parquet"),
     ("mistralai/Ministral-3-8B-Base-2512", "mistral.parquet"),
     ("Qwen/Qwen3.5-9B", "qwen.parquet"),
+    ("google-bert/bert-base-uncased", "bert-wordpiece.parquet"),
+    ("facebookAI/xlm-roberta-base", "xlmr.parquet"),
 ]
 
 
@@ -66,6 +70,9 @@ class GridConfig:
         Merge-threshold precision target
     merge_threshold_floor : float
         Lower bound for the tuned merge threshold
+    marker_policy : str
+        Marker-variant semantics ("merge" or "separate") used for both
+        dataset construction and the persisted classifier
     """
 
     n_pos: int
@@ -77,6 +84,7 @@ class GridConfig:
     threshold_floor: float
     merge_target_precision: float
     merge_threshold_floor: float
+    marker_policy: str = "merge"
 
     def config_id(self) -> str:
         """Return a identifier for this config.
@@ -89,6 +97,7 @@ class GridConfig:
         return (
             f"pos{self.n_pos}_hard{self.n_hard}_easy{self.n_easy}"
             f"__tp{self.target_precision}_mtp{self.merge_target_precision}"
+            f"__mp-{self.marker_policy}"
         )
 
 
@@ -373,6 +382,7 @@ def build_datasets(cfg: GridConfig, data_dir: Path, *, resume: bool) -> None:
             n_hard_negatives=cfg.n_hard,
             n_easy_negatives=cfg.n_easy,
             seed=cfg.seed,
+            marker_policy=cfg.marker_policy,
         )
         table = build_dataset(model_name, ds_cfg)
         write_dataset(table, out_path)
@@ -421,7 +431,7 @@ def train_classifier(
         f"negatives: {int((y == 0).sum())}"
     )
 
-    clf = MergeClassifier()
+    clf = MergeClassifier(marker_policy=cfg.marker_policy)
     clf.fit(
         X,
         y,
@@ -535,6 +545,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--outroot", type=Path, default=Path("data/grid"))
     ap.add_argument("--ood-model", type=str, default="Qwen/Qwen3-8B")
     ap.add_argument("--top-k", type=int, default=10)
+    ap.add_argument(
+        "--marker-policy",
+        choices=("merge", "separate"),
+        default="merge",
+        help="Marker-variant semantics for datasets, training, and clustering",
+    )
     ap.add_argument("--no-resume", action="store_true")
     args = ap.parse_args(argv)
 
@@ -585,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
                 threshold_floor=fixed["threshold_floor"],
                 merge_target_precision=mtp,
                 merge_threshold_floor=fixed["merge_threshold_floor"],
+                marker_policy=args.marker_policy,
             )
         )
 
@@ -635,6 +652,7 @@ def main(argv: list[str] | None = None) -> int:
                 "n_easy": cfg.n_easy,
                 "seed": cfg.seed,
                 "threshold_floor": cfg.threshold_floor,
+                "marker_policy": cfg.marker_policy,
             },
             "train": {
                 "args": {
