@@ -2,19 +2,9 @@
 
 """Grid-search dataset + training policy and score on an OOD tokenizer.
 
-This is the orchestration layer for `treetok` model selection:
-
-- Build per-tokenizer training datasets
-- Train an XGBoost merge classifier
-- Evaluate clustering on an OOD tokenizer (default: Qwen/Qwen3-8B)
-- Score runs with a smooth size-based penalty modulated by source ("mixed"
-  source clusters cost more) and pairwise internal Levenshtein spread
-- Report top runs sorted by score with Pareto-frontier markers on
-  `(score, coverage)`
-
-Artifacts are written under `data/grid/<timestamp>/configs/<config_id>/` with a
-single `results.jsonl` at the run root. Re-running into the same root resumes
-where it left off; pass `--no-resume` to force recomputation.
+Scoring uses a smooth size-based penalty modulated by source ("mixed" source
+clusters cost more) and pairwise internal Levenshtein spread. We report top
+runs sorted by score with Pareto-frontier markers on `(score, coverage)`.
 """
 
 import argparse
@@ -39,7 +29,6 @@ from treetok import (
 )
 from treetok.cluster import clusters_to_jsonable
 
-
 TRAIN_MODELS: list[tuple[str, str]] = [
     ("answerdotai/ModernBERT-base", "bert.parquet"),
     ("allenai/Olmo-3-1025-7B", "olmo.parquet"),
@@ -49,11 +38,6 @@ TRAIN_MODELS: list[tuple[str, str]] = [
 ]
 
 
-# Scoring constants (smooth, single-pass)
-SIZE_FREE = 6  # clusters this size or smaller incur no size penalty
-SIZE_EXP = 1.5  # super-linear growth above SIZE_FREE
-MIXED_MULT = 3.0  # multiplier for source == "mixed"
-DIST_AMP = 4.0  # 1 + DIST_AMP * dist_term scales the per-cluster term
 DIST_MIN_COUNT = 6  # only compute pairwise spread for clusters this big
 DIST_SAMPLE_K = 8  # decoded members sampled per cluster (C(8, 2) = 28 pairs)
 
@@ -95,7 +79,7 @@ class GridConfig:
     merge_threshold_floor: float
 
     def config_id(self) -> str:
-        """Return a stable filesystem-safe identifier for this config.
+        """Return a identifier for this config.
 
         Returns
         -------
@@ -103,9 +87,8 @@ class GridConfig:
             Identifier with preserved decimals
         """
         return (
-            f"pos{self.n_pos}_hard{self.n_hard}_easy{self.n_easy}_seed{self.seed}"
-            f"__tp{self.target_precision}_tf{self.threshold_floor}"
-            f"_mf{self.merge_threshold_floor}"
+            f"pos{self.n_pos}_hard{self.n_hard}_easy{self.n_easy}"
+            f"__tp{self.target_precision}_mtp{self.merge_target_precision}"
         )
 
 
@@ -125,24 +108,26 @@ def _load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _p95(values: list[float]) -> float:
-    """Compute a nearest-rank 95th percentile.
+def _percentile(values: list[int | float], p: float) -> float:
+    """Compute a nearest-rank percentile.
 
     Parameters
     ----------
-    values : list[float]
+    values : list[int | float]
         Samples
+    p : float
+        Percentile in [0, 1]
 
     Returns
     -------
     float
-        95th percentile, or 0.0 if `values` is empty
+        Percentile value, or 0.0 if `values` is empty
     """
     if not values:
         return 0.0
 
     v = sorted(values)
-    k = int((0.95 * (len(v) - 1)))
+    k = int(p * (len(v) - 1))
 
     return float(v[k])
 
@@ -210,20 +195,22 @@ def _pairwise_spread(members: list[str]) -> float:
 def score_clusters(
     *,
     clusters: list[dict],
+    vocab_size: int,
     edge_threshold: float | None,
     merge_threshold: float | None,
 ) -> tuple[float, dict]:
-    """Compute the OOD badness score and metric breakdown for a clustering.
+    """Compute distribution-based metrics for a clustering.
 
-    Per-cluster penalty is `size_term * mixed_mult * (1 + DIST_AMP * dist)`
-    where `size_term = max(0, count - SIZE_FREE) ** SIZE_EXP`. Clusters with
-    `count < DIST_MIN_COUNT` use `dist = 0`. The aggregate score (lower is
-    better) is the sum of per-cluster penalties
+    Returns a composite score (`coverage / (1 + p95_size)`) and a metrics dict
+    containing cluster size distribution percentiles. Pareto ranking should use
+    `(coverage, p95_size)` directly.
 
     Parameters
     ----------
     clusters : list[dict]
         Cluster records produced by `clusters_to_jsonable`
+    vocab_size : int
+        Total vocabulary size (for computing coverage percentage)
     edge_threshold : float or None
         Tuned edge threshold from the trained classifier
     merge_threshold : float or None
@@ -232,133 +219,94 @@ def score_clusters(
     Returns
     -------
     tuple[float, dict]
-        Scalar badness and a metrics dict for the JSONL row
+        Composite score (higher is better) and metrics dict
     """
 
     def c_count(c: dict) -> int:
         return int(c.get("count", 0))
 
-    def c_source(c: dict) -> str:
-        return str(c.get("source", ""))
+    sizes = [c_count(c) for c in clusters if c_count(c) >= 2]
+    coverage = sum(sizes)
+    coverage_pct = 100.0 * coverage / vocab_size if vocab_size > 0 else 0.0
 
-    n_clusters = len(clusters)
-    coverage = sum(1 for c in clusters if c_count(c) >= 2)
-    max_count = max((c_count(c) for c in clusters), default=0)
+    size_p50 = _percentile(sizes, 0.50)
+    size_p75 = _percentile(sizes, 0.75)
+    size_p90 = _percentile(sizes, 0.90)
+    size_p95 = _percentile(sizes, 0.95)
+    size_max = float(max(sizes)) if sizes else 0.0
 
-    # Diagnostic-only counts (not used in score)
-    n_big16 = sum(1 for c in clusters if c_count(c) > 16)
-    n_bad32 = sum(1 for c in clusters if c_count(c) > 32)
-    n_verybad64 = sum(1 for c in clusters if c_count(c) > 64)
-    n_mixed = sum(1 for c in clusters if c_source(c) == "mixed")
-    max_mixed_count = max(
-        (c_count(c) for c in clusters if c_source(c) == "mixed"),
-        default=0,
-    )
-    mixed_mass = sum(c_count(c) for c in clusters if c_source(c) == "mixed")
-
-    badness = 0.0
     spread_terms: list[float] = []
-    spread_terms_mixed: list[float] = []
-    n_dist_clusters = 0
-    n_dist_clusters_mixed = 0
     for c in clusters:
         n = c_count(c)
-        if n < 2:
-            continue
-
-        size_term = max(0.0, n - SIZE_FREE) ** SIZE_EXP
-        mixed_mult = MIXED_MULT if c_source(c) == "mixed" else 1.0
-
         if n >= DIST_MIN_COUNT:
             members = _sample_decoded_members(c, DIST_SAMPLE_K)
-            dist_term = _pairwise_spread(members)
-            spread_terms.append(dist_term)
-            n_dist_clusters += 1
-            if c_source(c) == "mixed":
-                spread_terms_mixed.append(dist_term)
-                n_dist_clusters_mixed += 1
-        else:
-            dist_term = 0.0
+            spread_terms.append(_pairwise_spread(members))
 
-        badness += size_term * mixed_mult * (1.0 + DIST_AMP * dist_term)
+    spread_p95 = _percentile(spread_terms, 0.95)
 
-    spread_p95 = _p95(spread_terms)
-    spread_max = float(max(spread_terms) if spread_terms else 0.0)
-    spread_p95_mixed = _p95(spread_terms_mixed)
-    spread_max_mixed = float(
-        max(spread_terms_mixed) if spread_terms_mixed else 0.0
-    )
+    score = coverage / (1.0 + size_p95) if size_p95 >= 0 else float(coverage)
 
     metrics = {
-        "n_clusters": n_clusters,
         "coverage": coverage,
-        "max_count": max_count,
-        "n_big16": n_big16,
-        "n_bad32": n_bad32,
-        "n_verybad64": n_verybad64,
-        "n_mixed": n_mixed,
-        "max_mixed_count": max_mixed_count,
-        "mixed_mass": mixed_mass,
-        "spread_p95": spread_p95,
-        "distance": {
-            "min_count": DIST_MIN_COUNT,
-            "sample_k": DIST_SAMPLE_K,
-            "n_clusters": n_dist_clusters,
-            "n_mixed_clusters": n_dist_clusters_mixed,
-            "pairwise_p95": spread_p95,
-            "pairwise_max": spread_max,
-            "pairwise_p95_mixed": spread_p95_mixed,
-            "pairwise_max_mixed": spread_max_mixed,
+        "coverage_pct": round(coverage_pct, 2),
+        "vocab_size": vocab_size,
+        "n_clusters": len(sizes),
+        "size_distribution": {
+            "p50": size_p50,
+            "p75": size_p75,
+            "p90": size_p90,
+            "p95": size_p95,
+            "max": size_max,
         },
-        "params": {
-            "size_free": SIZE_FREE,
-            "size_exp": SIZE_EXP,
-            "mixed_mult": MIXED_MULT,
-            "dist_amp": DIST_AMP,
-        },
+        "spread_p95": round(spread_p95, 3),
         "edge_threshold": edge_threshold,
         "merge_threshold": merge_threshold,
     }
-    return float(badness), metrics
+
+    return float(score), metrics
 
 
 def pareto_frontier_ids(rows: list[dict]) -> set[str]:
-    """Return the set of `config_id`s on the (badness, coverage) Pareto front.
+    """Return the set of `config_id`s on the (coverage, p95_size) Pareto front.
 
-    A row is on the frontier when no other row has both a smaller `score` and
-    a larger `coverage`, with at least one strict inequality. Ties on both
-    objectives keep all tied rows on the frontier
+    A row is Pareto-optimal when no other row has both higher coverage and
+    lower p95_size (with at least one strict inequality). Ties on both
+    objectives keep all tied rows on the frontier.
 
     Parameters
     ----------
     rows : list[dict]
-        Result rows (each must contain `score`, `config_id`, and
-        `ood.coverage`)
+        Result rows (each must contain `config_id` and `ood.coverage`,
+        `ood.size_distribution.p95`)
 
     Returns
     -------
     set[str]
         Config ids on the Pareto frontier
     """
-    pts: list[tuple[float, int, str]] = []
+    pts: list[tuple[int, float, str]] = []
     for r in rows:
         cid = r.get("config_id")
         if not isinstance(cid, str):
             continue
 
         try:
-            score = float(r.get("score", float("inf")))
-            coverage = int((r.get("ood") or {}).get("coverage", 0))
+            ood = r.get("ood") or {}
+            coverage = int(ood.get("coverage", 0))
+            size_dist = ood.get("size_distribution") or {}
+            p95_size = float(size_dist.get("p95", float("inf")))
         except Exception:
             continue
 
-        pts.append((score, coverage, cid))
+        pts.append((coverage, p95_size, cid))
 
     frontier: set[str] = set()
-    for s_i, c_i, cid_i in pts:
+    for cov_i, p95_i, cid_i in pts:
         dominated = False
-        for s_j, c_j, _ in pts:
-            if (s_j <= s_i and c_j >= c_i) and (s_j < s_i or c_j > c_i):
+        for cov_j, p95_j, _ in pts:
+            if (cov_j >= cov_i and p95_j <= p95_i) and (
+                cov_j > cov_i or p95_j < p95_i
+            ):
                 dominated = True
                 break
 
@@ -501,8 +449,8 @@ def cluster_ood(
     ood_json: Path,
     *,
     resume: bool,
-    n_jobs: int = 4,
-) -> list[dict]:
+    n_jobs: int = -1,
+) -> tuple[list[dict], int]:
     """Cluster the OOD tokenizer's vocabulary and persist the result.
 
     Parameters
@@ -520,11 +468,17 @@ def cluster_ood(
 
     Returns
     -------
-    list[dict]
-        Clusters in the same shape as `clusters_to_jsonable` produces
+    tuple[list[dict], int]
+        Clusters in the same shape as `clusters_to_jsonable` produces, and
+        the vocabulary size
     """
+    from treetok.hf import inspect
+
+    view = inspect(ood_model)
+    vocab_size = view.vocab_size
+
     if resume and ood_json.exists():
-        return _load_json(ood_json)
+        return _load_json(ood_json), vocab_size
 
     clusters = cluster_vocab(ood_model, classifier, n_jobs=n_jobs)
     clusters_data = clusters_to_jsonable(clusters)
@@ -532,7 +486,7 @@ def cluster_ood(
         json.dumps(clusters_data, ensure_ascii=False), encoding="utf-8"
     )
 
-    return clusters_data
+    return clusters_data, vocab_size
 
 
 def _report_to_dict(report) -> dict | None:
@@ -597,37 +551,44 @@ def main(argv: list[str] | None = None) -> int:
     print(f"OOD_MODEL={args.ood_model}")
     print(f"results={results_path}")
 
-    # Narrow grid defaults
-    n_pos = 2500
-    n_hards = [12000, 18000, 24000]
-    n_easies = [1000, 2000]
-    merge_floors = [0.85, 0.9, 0.95]
+    # Grid axes
+    n_positions = [2500, 4000, 5000]
+    n_hards = [18000, 24000]
+    n_easies = [2000]
+    target_precisions = [0.95, 0.99]
+    merge_target_precisions = [0.95, 0.999, 0.9995]
     seed = 0
 
+    # Fixed parameters
     fixed = {
         "val_size": 0.5,
-        "target_precision": 0.99,
-        "threshold_floor": 0.8,
-        "merge_target_precision": 0.999,
+        "threshold_floor": 0.5,
+        "merge_threshold_floor": 0.5,
     }
 
     grid: list[GridConfig] = []
-    for n_hard, n_easy, mf in itertools.product(
-        n_hards, n_easies, merge_floors
+    for n_pos, n_hard, n_easy, tp, mtp in itertools.product(
+        n_positions,
+        n_hards,
+        n_easies,
+        target_precisions,
+        merge_target_precisions,
     ):
         grid.append(
             GridConfig(
                 n_pos=n_pos,
-                n_hard=int(n_hard),
-                n_easy=int(n_easy),
+                n_hard=n_hard,
+                n_easy=n_easy,
                 seed=seed,
-                val_size=float(fixed["val_size"]),
-                target_precision=float(fixed["target_precision"]),
-                threshold_floor=float(fixed["threshold_floor"]),
-                merge_target_precision=float(fixed["merge_target_precision"]),
-                merge_threshold_floor=float(mf),
+                val_size=fixed["val_size"],
+                target_precision=tp,
+                threshold_floor=fixed["threshold_floor"],
+                merge_target_precision=mtp,
+                merge_threshold_floor=fixed["merge_threshold_floor"],
             )
         )
+
+    print(f"Grid size: {len(grid)} configs")
 
     existing = set() if not resume else read_existing_ids(results_path)
 
@@ -653,17 +614,19 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         # 3) OOD evaluation
-        clusters_data = cluster_ood(
+        clusters_data, vocab_size = cluster_ood(
             classifier, args.ood_model, ood_json, resume=resume
         )
 
         # 4) Score
         score, metrics = score_clusters(
             clusters=clusters_data,
+            vocab_size=vocab_size,
             edge_threshold=float(classifier.edge_threshold_),
             merge_threshold=float(classifier.merge_threshold_),
         )
 
+        size_dist = metrics["size_distribution"]
         row = {
             "config_id": cid,
             "params": {
@@ -671,6 +634,7 @@ def main(argv: list[str] | None = None) -> int:
                 "n_hard": cfg.n_hard,
                 "n_easy": cfg.n_easy,
                 "seed": cfg.seed,
+                "threshold_floor": cfg.threshold_floor,
             },
             "train": {
                 "args": {
@@ -687,20 +651,14 @@ def main(argv: list[str] | None = None) -> int:
             },
             "ood": {
                 "model": args.ood_model,
+                "vocab_size": metrics["vocab_size"],
                 "n_clusters": metrics["n_clusters"],
                 "coverage": metrics["coverage"],
-                "max_count": metrics["max_count"],
-                "n_big16": metrics["n_big16"],
-                "n_bad32": metrics["n_bad32"],
-                "n_verybad64": metrics["n_verybad64"],
-                "n_mixed": metrics["n_mixed"],
-                "max_mixed_count": metrics["max_mixed_count"],
-                "mixed_mass": metrics["mixed_mass"],
+                "coverage_pct": metrics["coverage_pct"],
+                "size_distribution": size_dist,
                 "spread_p95": metrics["spread_p95"],
-                "distance": metrics["distance"],
             },
             "score": score,
-            "score_params": metrics["params"],
             "paths": {
                 "run_dir": str(cfg_dir.resolve()),
                 "model": str(model_json.resolve()),
@@ -714,11 +672,11 @@ def main(argv: list[str] | None = None) -> int:
         existing.add(cid)
 
         print(
-            f"[{cid}] score={score:.2f} coverage={metrics['coverage']} "
-            f"spread_p95={metrics['spread_p95']:.3f} max={metrics['max_count']}"
+            f"[{cid}] score={score:.1f} cov={metrics['coverage']} ({metrics['coverage_pct']}%) "
+            f"p95={size_dist['p95']:.0f} max={size_dist['max']:.0f}"
         )
 
-    # Print top-k for convenience, with Pareto markers on (score, coverage)
+    # Print top-k for convenience, with Pareto markers on (coverage, p95_size)
     try:
         all_rows = []
         with results_path.open("r", encoding="utf-8") as f:
@@ -730,25 +688,31 @@ def main(argv: list[str] | None = None) -> int:
                 all_rows.append(json.loads(line))
 
         frontier = pareto_frontier_ids(all_rows)
-        all_rows.sort(key=lambda r: float(r.get("score", 1e30)))
+        all_rows.sort(key=lambda r: -float(r.get("score", 0)))
         top = all_rows[: max(0, int(args.top_k))]
         if top:
             print(
-                "\nTop by score (lower is better; [*] marks Pareto frontier):"
+                "\nTop by score (higher is better; [*] marks Pareto frontier "
+                "on coverage x p95_size):"
             )
             print(
-                f"{'score':>10}  {'coverage':>8}  {'spread_p95':>10}  "
-                f"{'max':>4}  config_id"
+                f"{'score':>10}  {'coverage':>8}  {'cov%':>6}  "
+                f"{'p50':>4}  {'p75':>4}  {'p90':>4}  {'p95':>4}  {'max':>4}  config_id"
             )
             for r in top:
                 ood = r.get("ood") or {}
+                size_dist = ood.get("size_distribution") or {}
                 cid = r.get("config_id")
                 marker = " [*]" if cid in frontier else ""
                 print(
-                    f"{float(r.get('score')):>10.2f}  "
+                    f"{float(r.get('score', 0)):>10.1f}  "
                     f"{int(ood.get('coverage', 0)):>8}  "
-                    f"{float(ood.get('spread_p95', 0.0)):>10.3f}  "
-                    f"{int(ood.get('max_count', 0)):>4}  "
+                    f"{float(ood.get('coverage_pct', 0)):>5.1f}%  "
+                    f"{int(size_dist.get('p50', 0)):>4}  "
+                    f"{int(size_dist.get('p75', 0)):>4}  "
+                    f"{int(size_dist.get('p90', 0)):>4}  "
+                    f"{int(size_dist.get('p95', 0)):>4}  "
+                    f"{int(size_dist.get('max', 0)):>4}  "
                     f"{cid}{marker}"
                 )
     except Exception:
