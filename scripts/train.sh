@@ -7,17 +7,17 @@ OUTDIR="data/"
 CLF="model.json"
 
 # Preferred training dataset composition
-N_POS=2500
+N_POS=5000
 N_HARD=24000
 N_EASY=2000
 SEED=0
 
 # Preferred training hyperparameters
 VAL_SIZE=0.5
-TARGET_PRECISION=0.99
-THRESHOLD_FLOOR=0.8
+TARGET_PRECISION=0.95
+THRESHOLD_FLOOR=0.5
 MERGE_TARGET_PRECISION=0.999
-MERGE_THRESHOLD_FLOOR=0.95
+MERGE_THRESHOLD_FLOOR=0.5
 
 typeset -A MODELS=(
   answerdotai/ModernBERT-base             bert.parquet
