@@ -19,10 +19,16 @@ Prints tokenizer metadata as JSON (family, vocab size, marker stats).
 
 ```sh
 python -m treetok build-dataset <model> -o <out.parquet> \
-  --n-positives 5000 --n-hard-negatives 5000 --n-easy-negatives 2000 --seed 0
+  --n-positives 5000 --n-hard-negatives 5000 --n-easy-negatives 2000 --seed 0 \
+  --marker-policy merge
 ```
 
 Writes a Parquet file containing labeled token pairs and feature columns.
+
+`--marker-policy` (default `merge`) selects marker-variant semantics: `merge`
+labels marker toggles (`hello` / `\u0120hello` / `##hello`) as positives;
+`separate` mines them as hard negatives. The policy is recorded in the
+dataset and later in the trained model.
 
 ## train
 
@@ -31,7 +37,8 @@ python -m treetok train <data1.parquet> [<data2.parquet> ...] -o <model.json>
 ```
 
 Trains a classifier and saves a single JSON artifact containing the booster,
-feature metadata, and tuned thresholds.
+feature metadata, tuned thresholds, and the marker policy inherited from the
+datasets (all input datasets must share one policy).
 
 Key flags (defaults shown):
 
@@ -56,6 +63,7 @@ Key flags (defaults shown):
 - `-k, --top-k` (default: no limit)
 - `--edge-threshold` (default: classifier tuned)
 - `--merge-threshold` (default: classifier tuned)
+- `--marker-policy` (default: the policy recorded in the classifier artifact)
 - `--batch-size 50000`
 - `-j, --n-jobs 1` (use `<= 0` to mean "all CPUs")
 - `-q, --quiet` (skip stdout pretty-print)

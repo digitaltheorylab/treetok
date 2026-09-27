@@ -12,6 +12,17 @@ Training data is built from three sources:
 The defaults are intended to be starting points, however, your tokenizer mix
 can change what "hard" looks like.
 
+## Marker Policy
+
+`--marker-policy` decides whether marker toggles (`hello` / `\u0120hello` /
+`##hello`) are variants (`merge`, the default) or distinct tokens
+(`separate`). Under `merge` they are synthetic positives; under `separate`
+they are mined as hard negatives and cross-marker merges are structurally
+impossible at cluster time. The policy is stamped into each dataset, must be
+consistent across all datasets passed to `train`, and is stored in the model
+artifact (clustering follows the model's policy by default). Train one model
+per policy; do not mix.
+
 ## Recommended Starting Point
 
 As a starting point for a single tokenizer:
