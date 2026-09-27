@@ -17,7 +17,7 @@ MARKER_POLICIES = ("merge", "separate")
 DEFAULT_MARKER_POLICY = "merge"
 
 FEATURE_SPEC = {
-    "version": 4,
+    "version": 5,
     "names": [
         # Edit-distance family
         "lev_dist",
@@ -163,7 +163,14 @@ class TokenFeatures:
     compare: list[str]
     stripped: list[str]
 
-    # Other per-token strings used for pair-equality features
+    # Other per-token strings used for pair-equality features. Casefold and
+    # NFKC/NFKD are computed on the comparison surface, so byte-level BPE
+    # tokens normalize their decoded text rather than its byte-glyph
+    # rendering. Tokens whose decoded form is partial/malformed (byte-glyph
+    # fallback) keep their compare surface unnormalized: applying Unicode
+    # case/compatibility maps to raw-byte glyphs would equate distinct byte
+    # sequences (e.g. NFKC("\u0132") == "IJ", casefold("\u0132") ==
+    # "\u0133")
     casefold: list[str]
     nfkc: list[str]
     nfkd: list[str]
@@ -244,6 +251,7 @@ class TokenFeatures:
         if byte_level:
             has_marker = view.has_marker
             compare = []
+            clean = []
             for k, (s, d) in enumerate(zip(stripped, decoded)):
                 if d and "\ufffd" not in d:
                     if (
@@ -253,14 +261,28 @@ class TokenFeatures:
                     ):
                         d = d[1:]
                     compare.append(d)
+                    clean.append(True)
                 else:
                     compare.append(s)
+                    clean.append(False)
         else:
             compare = list(stripped)
+            clean = [True] * len(compare)
 
-        casefold = [c.casefold() for c in compare]
-        nfkc = [unicodedata.normalize("NFKC", s) for s in stripped]
-        nfkd = [unicodedata.normalize("NFKD", s) for s in stripped]
+        # Casefold/NFKC/NFKD operate on a comparison surface. For byte-glyph
+        # fallback tokens the surface encodes raw bytes, so Unicode
+        # normalization is meaningless (or even harmful). We keep the surface
+        # as-is for those tokens and degrade the *_eq features to exact compare
+        # equality
+        casefold = [c.casefold() if ok else c for c, ok in zip(compare, clean)]
+        nfkc = [
+            unicodedata.normalize("NFKC", c) if ok else c
+            for c, ok in zip(compare, clean)
+        ]
+        nfkd = [
+            unicodedata.normalize("NFKD", c) if ok else c
+            for c, ok in zip(compare, clean)
+        ]
         decoded_casefold = [s.casefold() for s in decoded]
 
         len_chars = np.array([len(t) for t in vocab], dtype=np.int32)

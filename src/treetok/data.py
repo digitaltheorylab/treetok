@@ -18,7 +18,14 @@ from .features import (
     pair_features,
 )
 from .hf import TokenizerView, inspect
-from .script import CANONICAL_CORES, char_script, is_alphabetic
+from .script import (
+    BYTE_LEVEL_FAMILY,
+    CANONICAL_CORES,
+    char_script,
+    decode_byte_glyphs,
+    encode_byte_glyphs,
+    is_alphabetic,
+)
 
 
 @dataclass
@@ -120,6 +127,32 @@ def _norm_variants(s: str) -> list[str]:
     return list(out)
 
 
+def _byte_level_norm_variants(s: str) -> list[str]:
+    """Return NFKC/NFKD variants for a byte-level BPE token surface.
+
+    Byte-level tokens render UTF-8 bytes as glyphs, so normalization must run
+    on the decoded text and be re-encoded to the glyph surface for vocabulary
+    lookup. Normalizing the glyph surface directly would produce nonsense
+    (and occasionally false positives, e.g. NFKC("\u0132") == "IJ" equates a
+    raw control byte with letters)
+
+    Parameters
+    ----------
+    s : str
+        Token string on the byte-glyph surface
+
+    Returns
+    -------
+    list[str]
+        Glyph-surface variants; empty when `s` is not cleanly decodable
+    """
+    text = decode_byte_glyphs(s)
+    if text is None:
+        return []
+
+    return [encode_byte_glyphs(v) for v in _norm_variants(text)]
+
+
 def _strip_edge_punct(s: str) -> list[str]:
     """Drop a single edge-punctuation character if present.
 
@@ -183,6 +216,7 @@ def _candidate_partners(
         Candidate variant strings.
     """
     toggle_markers = marker_policy == "merge"
+    byte_level = view.family == BYTE_LEVEL_FAMILY
 
     seeds = [s]
     if toggle_markers:
@@ -193,8 +227,16 @@ def _candidate_partners(
     pool = set()
     for seed in seeds:
         pool.update(_case_variants(seed))
-        pool.update(_norm_variants(seed))
+
+        # Normalization variants are meaningful on text, not on byte-glyph
+        # renderings; for byte-level BPE, decode -> normalize -> re-encode
+        if byte_level:
+            pool.update(_byte_level_norm_variants(seed))
+        else:
+            pool.update(_norm_variants(seed))
+
         pool.update(_strip_edge_punct(seed))
+
         if toggle_markers:
             pool.update(_toggle_marker(seed, view))
 
@@ -392,11 +434,15 @@ def hard_negatives(
     cf = tf.casefold
     compare = tf.compare
     decoded = tf.decoded
+    nfkc_h = tf.nfkc_hash
+    nfkd_h = tf.nfkd_hash
 
     pool = []
     seen = set()
 
-    # Sub-stream 1: stratum-based mined negatives
+    # Sub-stream 1: stratum-based mined negatives. Pairs that are equal on any
+    # canonical surface are excluded: they're the poisitive class, and labeling
+    # them negative would contradict our synthetic positives
     for i, j in iter_pairs(tf):
         key = (i, j)
         if key in positives or key in seen:
@@ -406,6 +452,8 @@ def hard_negatives(
             compare[i] == compare[j]
             or cf[i] == cf[j]
             or decoded[i] == decoded[j]
+            or nfkc_h[i] == nfkc_h[j]
+            or nfkd_h[i] == nfkd_h[j]
         ):
             continue
 
@@ -599,9 +647,9 @@ def _explicit_edit_negatives(
             if key in positives or key in already_seen:
                 continue
 
-            # Require casefold inequality on stripped forms; otherwise it's
-            # actually a positive (e.g. case-only edit)
-            if cf[i] == cf[j]:
+            # Require casefold and NFKC inequality; otherwise it's actually
+            # a positive (e.g. case-only or normalization-only edit)
+            if cf[i] == cf[j] or tf.nfkc_hash[i] == tf.nfkc_hash[j]:
                 continue
 
             out.append(key)
@@ -625,7 +673,7 @@ def _explicit_edit_negatives(
                 if key in positives or key in already_seen:
                     continue
 
-                if cf[i] == cf[j]:
+                if cf[i] == cf[j] or tf.nfkc_hash[i] == tf.nfkc_hash[j]:
                     continue
 
                 out.append(key)

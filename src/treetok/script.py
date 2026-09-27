@@ -15,28 +15,19 @@ SCRIPT_DEVANAGARI = 7
 SCRIPT_BYTE_GLYPH = 8
 
 
-def _build_byte_glyph_set() -> frozenset[str]:
-    """Return the set of code points GPT-2 byte-level BPE uses for non-ASCII
-    bytes and control bytes.
+def _bytes_to_unicode() -> dict[int, str]:
+    """Return the byte -> glyph mapping used by GPT-2 byte-level BPE.
 
     Mirrors `bytes_to_unicode()` from OpenAI's GPT-2 encoder and the Hugging
     Face port: bytes 33..126, 161..172, 174..255 map to themselves; the
     remaining control/whitespace bytes (0..32, 127..160, 173) are remapped to
-    Latin Extended-A code points starting at U+0100
-
-    We return the image of every byte that is NOT an ASCII printable
-    (0x21..0x7E). Concretely this is:
-
-    - Bytes 0x80..0xFF, which map into the Latin-1 supplement (e.g. byte 0xC3
-      -> "Ã"); these are typical mojibake glyphs
-    - Control / whitespace bytes (0x00..0x20, 0x7F, 0xA0, 0xAD), which map into
-      the remapped block at U+0100..U+0143; this includes the leading-space
-      marker `Ġ` (from byte 0x20) and `ġ` (from byte 0x7F)
+    Latin Extended-A code points starting at U+0100. This includes the
+    leading-space marker `Ġ` (from byte 0x20) and `ġ` (from byte 0x7F)
 
     Returns
     -------
-    frozenset[str]
-        Single-character strings spanning the byte-glyph alphabet
+    dict[int, str]
+        Mapping from byte value (0..255) to its single-character glyph
     """
     bs = (
         list(range(ord("!"), ord("~") + 1))
@@ -51,18 +42,66 @@ def _build_byte_glyph_set() -> frozenset[str]:
             cs.append(256 + n)
             n += 1
 
-    # Exclude the ASCII-printable range (0x21..0x7E); those map to themselves
-    # and overlap with genuine Latin tokens. Keep everything else
-    return frozenset(chr(c) for b, c in zip(bs, cs) if not (0x21 <= b <= 0x7E))
+    return {b: chr(c) for b, c in zip(bs, cs)}
 
+
+# Full byte <-> glyph maps for the GPT-2 byte-level BPE alphabet
+BYTE_TO_GLYPH = _bytes_to_unicode()
+GLYPH_TO_BYTE = {g: b for b, g in BYTE_TO_GLYPH.items()}
 
 # Characters that GPT-2 / Qwen3-style byte-level BPE uses to encode raw bytes
-# 0x80..0xFF. These render as Latin-1 supplement / Latin Extended glyphs but
-# carry no script meaning of their own; they're the surface form of arbitrary
-# byte sequences. We bucket them separately to avoid polluting the Latin
-# noising alphabet and to prevent mojibake tokens from clustering with real
-# Latin tokens
-BYTE_GLYPH_CHARS = _build_byte_glyph_set()
+# outside the ASCII-printable range (0x21..0x7E map to themselves and overlap
+# with genuine Latin tokens, so they're excluded). These render as Latin-1
+# supplement / Latin Extended glyphs but carry no script meaning of their own;
+# they're the surface form of arbitrary byte sequences. We bucket them
+# separately to avoid polluting the Latin noising alphabet and to prevent
+# mojibake tokens from clustering with real Latin tokens
+BYTE_GLYPH_CHARS = frozenset(
+    g for b, g in BYTE_TO_GLYPH.items() if not (0x21 <= b <= 0x7E)
+)
+
+
+def encode_byte_glyphs(text: str) -> str:
+    """Encode text into the GPT-2 byte-glyph token surface form.
+
+    Parameters
+    ----------
+    text : str
+        Decoded, user-visible text
+
+    Returns
+    -------
+    str
+        The byte-glyph rendering of the text's UTF-8 bytes (e.g. " hi" ->
+        "Ġhi", "é" -> "Ã©")
+    """
+    return "".join(BYTE_TO_GLYPH[b] for b in text.encode("utf-8"))
+
+
+def decode_byte_glyphs(s: str) -> str | None:
+    """Decode a byte-glyph token surface into text, or None on failure.
+
+    Parameters
+    ----------
+    s : str
+        Token surface composed of byte glyphs
+
+    Returns
+    -------
+    str or None
+        Decoded text, or None if `s` contains non-glyph characters or its
+        underlying bytes are not valid UTF-8 (partial multi-byte sequences)
+    """
+    try:
+        raw = bytes(GLYPH_TO_BYTE[ch] for ch in s)
+    except KeyError:
+        return None
+
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
 
 # The tokenizer family whose vocabulary uses BYTE_GLYPH_CHARS to represent raw
 # bytes. Used to gate byte-glyph detection in `script_bucket` and `char_script1
