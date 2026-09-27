@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import xgboost as xgb
 
-from .features import FEATURE_SPEC
+from .features import DEFAULT_MARKER_POLICY, FEATURE_SPEC, MARKER_POLICIES
 
 
 def _f1_binary(y_true, y_pred):
@@ -228,6 +228,7 @@ class MergeClassifier:
         feature_spec_version: int | None = None,
         feature_names: list[str] | None = None,
         params: dict | None = None,
+        marker_policy: str = DEFAULT_MARKER_POLICY,
     ):
         """Initialize the classifier.
 
@@ -245,7 +246,23 @@ class MergeClassifier:
             Feature names
         params : dict or None
             Parameters for the booster
+        marker_policy : str
+            Marker-variant semantics the training data was built under. One
+            of "merge" or "separate"
+
+        Raises
+        ------
+        ValueError
+            If `marker_policy` is unknown
         """
+        if marker_policy not in MARKER_POLICIES:
+            raise ValueError(
+                f"marker_policy must be one of {MARKER_POLICIES}; "
+                f"got {marker_policy!r}"
+            )
+
+        self.marker_policy = marker_policy
+
         self.feature_spec_version = (
             feature_spec_version
             if feature_spec_version is not None
@@ -537,6 +554,7 @@ class MergeClassifier:
         payload = {
             "feature_spec_version": self.feature_spec_version,
             "feature_names": self.feature_names,
+            "marker_policy": self.marker_policy,
             "edge_threshold": self.edge_threshold_,
             "merge_threshold": self.merge_threshold_,
             "params": self.params,
@@ -587,6 +605,9 @@ class MergeClassifier:
             feature_spec_version=spec_v,
             feature_names=list(payload["feature_names"]),
             params=dict(payload.get("params") or {}),
+            marker_policy=str(
+                payload.get("marker_policy", DEFAULT_MARKER_POLICY)
+            ),
         )
 
         report_data = payload.get("report")

@@ -9,8 +9,15 @@ from rapidfuzz.distance import DamerauLevenshtein, JaroWinkler, Levenshtein
 from .hf import TokenizerView
 from .script import BYTE_LEVEL_FAMILY, SCRIPT_BYTE_GLYPH, script_bucket
 
+# Marker-variant semantics. "merge" treats marker toggles (e.g. `hello` vs
+# `\u0120hello`, `World` vs `\u2581World`, `the` vs `##the`) as surface-form
+# variants of the same cluster; "separate" treats them as distinct tokens that
+# must never merge
+MARKER_POLICIES = ("merge", "separate")
+DEFAULT_MARKER_POLICY = "merge"
+
 FEATURE_SPEC = {
-    "version": 3,
+    "version": 4,
     "names": [
         # Edit-distance family
         "lev_dist",
@@ -135,8 +142,14 @@ class TokenFeatures:
     - Marker agreement, decoded-form equality, casefold/NFKC/NFKD/compare
       equality
     - Script agreement
-    - Log-id-distance (proxy for BPE merge-rank proximity)
     - Tokenizer family one-hot (broadcast from TokenizerView)
+
+    `marker_policy` records the marker-variant semantics this pack was built
+    with (see `MARKER_POLICIES`). Under "merge", the comparison for byte-level
+    BPE tokens drops the leading space contributed by the marker, so
+    byte-level BPE tokens drops the leading space contributed by the marker,
+    `\u0120hello` and `hello` compare equal; under "separate" the leading space
+    is kept
     """
 
     view: TokenizerView
@@ -174,14 +187,26 @@ class TokenFeatures:
     # Tokenizer family one-hot, broadcast across all pairs
     family_one_hot: np.ndarray
 
+    # Marker-variant semantics this pack was built with
+    marker_policy: str = DEFAULT_MARKER_POLICY
+
     @classmethod
-    def from_view(cls, view: TokenizerView) -> "TokenFeatures":
+    def from_view(
+        cls,
+        view: TokenizerView,
+        marker_policy: str = DEFAULT_MARKER_POLICY,
+    ) -> "TokenFeatures":
         """Build a per-token feature pack for one tokenizer.
 
         Parameters
         ----------
         view : TokenizerView
             Tokenizer snapshot
+        marker_policy : str
+            One of `MARKER_POLICIES`. Under "merge", byte-level BPE tokens
+            with the leading-space marker drop that space on the comparison
+            surface so marker toggles collapse; under "separate" the space is
+            kept and marker variants stay distinct
 
         Returns
         -------
@@ -191,9 +216,15 @@ class TokenFeatures:
         Raises
         ------
         ValueError
-            If shape of the family one-hot array mismatches family feature
-            names size
+            If `marker_policy` is unknown, or if the shape of the family
+            one-hot array mismatches family feature names size
         """
+        if marker_policy not in MARKER_POLICIES:
+            raise ValueError(
+                f"marker_policy must be one of {MARKER_POLICIES}; "
+                f"got {marker_policy!r}"
+            )
+
         vocab = view.vocab
         stripped = list(view.stripped)
         decoded = list(view.decoded)
@@ -205,12 +236,25 @@ class TokenFeatures:
         # edit-distance scoring all operating on it rather than the byte
         # encoding. For other families, or for byte-level tokens whose decoded
         # form is partial/malformed, we fall back to the stripped surface
+        # Under marker_policy="merge", the marker's leading space is dropped
+        # from clean decoded forms so `\u0120hello` and `hello` share a
+        # comparison surface (and hence a canonical key / stratum). Under
+        # "separate", the space is kept so the two never compare equal
         byte_level = view.family == BYTE_LEVEL_FAMILY
         if byte_level:
-            compare = [
-                d if d and "\ufffd" not in d else s
-                for s, d in zip(stripped, decoded)
-            ]
+            has_marker = view.has_marker
+            compare = []
+            for k, (s, d) in enumerate(zip(stripped, decoded)):
+                if d and "\ufffd" not in d:
+                    if (
+                        marker_policy == "merge"
+                        and has_marker[k]
+                        and d.startswith(" ")
+                    ):
+                        d = d[1:]
+                    compare.append(d)
+                else:
+                    compare.append(s)
         else:
             compare = list(stripped)
 
@@ -253,6 +297,7 @@ class TokenFeatures:
             script=script,
             has_marker=view.has_marker.copy(),
             family_one_hot=family_one_hot,
+            marker_policy=marker_policy,
         )
 
 

@@ -12,7 +12,7 @@ band.
 
 import math
 from collections import defaultdict
-from typing import Iterator
+from collections.abc import Iterator
 
 import numpy as np
 from rapidfuzz import process
@@ -84,10 +84,34 @@ def _eligible_mask(tf: TokenFeatures, *, min_len: int = MIN_LEN) -> np.ndarray:
     return mask
 
 
+def _marker_bits(tf: TokenFeatures) -> np.ndarray:
+    """Return the per-token marker bit used for stratification.
+
+    Under `marker_policy="separate"`, tokens with/without a marker are pushed
+    into different strata, so marker variants aren't proposed as candidate
+    pairs. Under "merge", the bit is constant `False`, which folds two strata
+    together and enables cross-marker pairs to be generated and scored.
+
+    Parameters
+    ----------
+    tf : TokenFeatures
+        Precomputed per-token cache
+
+    Returns
+    -------
+    np.ndarray
+        Boolean array of shape (vocab_size,)
+    """
+    if tf.marker_policy == "separate":
+        return tf.has_marker
+
+    return np.zeros(tf.view.vocab_size, dtype=bool)
+
+
 def _stratify(
     tf: TokenFeatures, base_mask: np.ndarray
 ) -> dict[tuple[int, bool, int], list[int]]:
-    """Group token indices by (script, has_marker, compare_length).
+    """Group token indices by (script, marker_bit, compare_length).
 
     Parameters
     ----------
@@ -101,7 +125,7 @@ def _stratify(
     dict[tuple[int, bool, int], list[int]]
         Map from `(script, has_marker, length)` to a list of token indices
     """
-    has_marker = tf.has_marker
+    has_marker = _marker_bits(tf)
     script = tf.script
     compare_len = tf.compare_len
 
@@ -350,10 +374,12 @@ def iter_anchor_pair_batches(
 
     strata = _stratify(tf, elig)
 
-    # Only strata that contain at least one anchor are relevant
+    # Only strata that contain at least one anchor are relevant. We use the
+    # policy-aware marker bit so keys match with `_stratify()`
+    marker_bits = _marker_bits(tf)
     anchor_sm = set()
     for a in anchor_idx:
-        anchor_sm.add((tf.script[a], tf.has_marker[a]))
+        anchor_sm.add((int(tf.script[a]), bool(marker_bits[a])))
 
     def gen() -> Iterator[np.ndarray]:
         by_sm = defaultdict(dict)
@@ -363,7 +389,7 @@ def iter_anchor_pair_batches(
 
             by_sm[(s, m)][L] = members
 
-        for (_s, _m), length_buckets in by_sm.items():
+        for length_buckets in by_sm.values():
             for L, members in length_buckets.items():
                 q_max = _length_aware_max_dist(L)
                 if q_max == 0:

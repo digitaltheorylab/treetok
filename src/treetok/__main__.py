@@ -81,6 +81,7 @@ def _cmd_build_dataset(args: argparse.Namespace) -> int:
         n_hard_negatives=args.n_hard_negatives,
         n_easy_negatives=args.n_easy_negatives,
         seed=args.seed,
+        marker_policy=args.marker_policy,
     )
     table = build_dataset(
         args.model,
@@ -106,7 +107,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
     args : argparse.Namespace
         Parsed CLI arguments
     """
-    from .data import feature_matrix, read_dataset
+    from .data import dataset_marker_policy, feature_matrix, read_dataset
     from .model import MergeClassifier
 
     tables = [read_dataset(p) for p in args.data]
@@ -117,8 +118,13 @@ def _cmd_train(args: argparse.Namespace) -> int:
     )
     logger.info("loaded %d rows from %d file(s)", table.num_rows, len(tables))
 
+    # All datasets must agree on marker semantics; the policy is recorded in
+    # the model artifact so clustering featurizes the same way
+    marker_policy = dataset_marker_policy(table)
+    logger.info("marker policy: %s", marker_policy)
+
     X, y = feature_matrix(table)
-    clf = MergeClassifier()
+    clf = MergeClassifier(marker_policy=marker_policy)
     clf.fit(
         X,
         y,
@@ -178,6 +184,7 @@ def _cmd_cluster(args: argparse.Namespace) -> int:
         batch_size=args.batch_size,
         n_jobs=args.n_jobs,
         tokenizer_kwargs={"trust_remote_code": args.trust_remote_code},
+        marker_policy=args.marker_policy,
     )
 
     if not args.quiet:
@@ -232,6 +239,16 @@ def main(argv: list[str] | None = None) -> int:
     p_data.add_argument("--n-hard-negatives", type=int, default=5000)
     p_data.add_argument("--n-easy-negatives", type=int, default=2000)
     p_data.add_argument("--seed", type=int, default=0)
+    p_data.add_argument(
+        "--marker-policy",
+        choices=("merge", "separate"),
+        default="merge",
+        help=(
+            "Marker-variant semantics: 'merge' labels marker toggles "
+            "(hello / \u0120hello / ##hello) as positives; 'separate' mines "
+            "them as hard negatives"
+        ),
+    )
     _add_trust_remote_code_flag(p_data)
     p_data.set_defaults(func=_cmd_build_dataset)
 
@@ -291,6 +308,15 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=None,
         help="Override the classifier's tuned merge threshold",
+    )
+    p_cluster.add_argument(
+        "--marker-policy",
+        choices=("merge", "separate"),
+        default=None,
+        help=(
+            "Override the marker policy recorded in the classifier artifact "
+            "(default: use the model's policy)"
+        ),
     )
     p_cluster.add_argument("--batch-size", type=int, default=50_000)
     p_cluster.add_argument(

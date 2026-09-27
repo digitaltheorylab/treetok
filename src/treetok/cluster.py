@@ -10,7 +10,7 @@ from .candidates import (
     iter_anchor_pair_batches,
     iter_pair_batches,
 )
-from .features import TokenFeatures
+from .features import DEFAULT_MARKER_POLICY, TokenFeatures
 from .hf import inspect
 from .model import MergeClassifier
 from .parallel import score_pairs_batched
@@ -111,9 +111,31 @@ class _UnionFind:
         return rx
 
 
-def _canonical_key(tf: TokenFeatures, idx: int) -> tuple[int, str]:
-    """Return `(script_bucket, casefold(stripped))` for a token."""
-    return int(tf.script[idx]), tf.casefold[idx]
+def _canonical_key(tf: TokenFeatures, idx: int) -> tuple[int, bool, str]:
+    """Return the canonical grouping key for a token.
+
+    The key is `(script_bucket, marker_bit, casefold(compare))`. Under
+    `marker_policy="merge"` the marker bit is constant False, so marker
+    variants share a key; under "separate" it is the token's `has_marker`
+    flag, so they never collapse
+
+    Parameters
+    ----------
+    tf : TokenFeatures
+        Token features
+    idx : int
+        Script bucket
+
+    Returns
+    -------
+    tuple[int, bool, str]
+        Canonical grouping key
+    """
+    marker = (
+        bool(tf.has_marker[idx]) if tf.marker_policy == "separate" else False
+    )
+
+    return int(tf.script[idx]), marker, tf.casefold[idx]
 
 
 def _anchor_groups(
@@ -154,7 +176,7 @@ def _anchor_groups(
         key = _canonical_key(tf, idx)
 
         # Skip empty casefolds; those would collapse non-related tokens
-        if not key[1]:
+        if not key[2]:
             continue
 
         buckets[key].append(idx)
@@ -548,6 +570,7 @@ def cluster_vocab(
     n_jobs: int = DEFAULT_N_JOBS,
     tokenizer_kwargs: dict | None = None,
     canonical_min_len: int = 2,
+    marker_policy: str | None = None,
 ) -> list[ClusterInfo]:
     """Inspect a tokenizer, build features, and cluster.
 
@@ -573,14 +596,24 @@ def cluster_vocab(
         Comparison-surface length floor for step 1's canonical bucketing.
         Lower than the scoring-stage floor (`MIN_LEN`, 3) by default because
         step 1 scores no pairs
+    marker_policy : str or None
+        Marker-variant semantics ("merge" or "separate"). Defaults to the
+        policy recorded in the classifier artifact, so clustering matches the
+        semantics the model was trained under
 
     Returns
     -------
     list[ClusterInfo]
         Clusters.
     """
+    policy = (
+        marker_policy
+        if marker_policy is not None
+        else getattr(classifier, "marker_policy", DEFAULT_MARKER_POLICY)
+    )
+
     view = inspect(model_name, tokenizer_kwargs=tokenizer_kwargs)
-    tf = TokenFeatures.from_view(view)
+    tf = TokenFeatures.from_view(view, marker_policy=policy)
     clusters = cluster_view(
         tf,
         classifier,

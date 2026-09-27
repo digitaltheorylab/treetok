@@ -10,19 +10,38 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .candidates import _eligible_mask, iter_pairs
-from .features import FEATURE_SPEC, TokenFeatures, pair_features
+from .features import (
+    DEFAULT_MARKER_POLICY,
+    FEATURE_SPEC,
+    MARKER_POLICIES,
+    TokenFeatures,
+    pair_features,
+)
 from .hf import TokenizerView, inspect
 from .script import CANONICAL_CORES, char_script, is_alphabetic
 
 
 @dataclass
 class DatasetConfig:
-    """Configuration for dataset construction."""
+    """Configuration for dataset construction.
+
+    When `marker_policy="merge"`, marker toggles are synthetic positives; under
+    "separate", they are hard negatives
+    """
 
     n_synthetic_positives: int = 5_000
     n_hard_negatives: int = 5_000
     n_easy_negatives: int = 2_000
     seed: int = 0
+    marker_policy: str = DEFAULT_MARKER_POLICY
+
+    def __post_init__(self):
+        """Check for a valid marker policy."""
+        if self.marker_policy not in MARKER_POLICIES:
+            raise ValueError(
+                f"marker_policy must be one of {MARKER_POLICIES}; "
+                f"got {self.marker_policy!r}"
+            )
 
 
 def _toggle_marker(s: str, view: TokenizerView) -> list[str]:
@@ -129,7 +148,11 @@ def _strip_edge_punct(s: str) -> list[str]:
     return out
 
 
-def _candidate_partners(s: str, view: TokenizerView) -> list[str]:
+def _candidate_partners(
+    s: str,
+    view: TokenizerView,
+    marker_policy: str = DEFAULT_MARKER_POLICY,
+) -> list[str]:
     """Generate candidate surface-form variant strings for `s`.
 
     Restricted to true surface-form variants:
@@ -137,7 +160,8 @@ def _candidate_partners(s: str, view: TokenizerView) -> list[str]:
     - Case
     - NFKC/NFKD normalization
     - Edge-punctuation stripping
-    - Marker-toggling
+    - Marker-toggling (only under `marker_policy="merge"`; under "separate",
+      marker toggles are not variants and are mined as hard negatives)
 
     We exclude typos for this step and use them as hard negatives instead
 
@@ -147,17 +171,23 @@ def _candidate_partners(s: str, view: TokenizerView) -> list[str]:
     Parameters
     ----------
     s : str
-        Token string.
+        Token string
     view : TokenizerView
-        Tokenizer snapsho.
+        Tokenizer snapshot
+    marker_policy : str
+        One of `MARKER_POLICIES`
 
     Returns
     -------
     list[str]
         Candidate variant strings.
     """
+    toggle_markers = marker_policy == "merge"
+
     seeds = [s]
-    seeds.extend(_toggle_marker(s, view))
+    if toggle_markers:
+        seeds.extend(_toggle_marker(s, view))
+
     seeds.extend(_case_variants(s))
 
     pool = set()
@@ -165,7 +195,8 @@ def _candidate_partners(s: str, view: TokenizerView) -> list[str]:
         pool.update(_case_variants(seed))
         pool.update(_norm_variants(seed))
         pool.update(_strip_edge_punct(seed))
-        pool.update(_toggle_marker(seed, view))
+        if toggle_markers:
+            pool.update(_toggle_marker(seed, view))
 
     pool.discard(s)
 
@@ -294,7 +325,7 @@ def synthetic_positives(
             break
 
         s = view.vocab[i]
-        partners = _candidate_partners(s, view)
+        partners = _candidate_partners(s, view, tf.marker_policy)
         for p in partners:
             j = vocab_idx.get(p)
             if j is None or j == i:
@@ -332,6 +363,10 @@ def hard_negatives(
        negatives like "ing" <-> "Sing". The synthetic positive generator can't
        produce these, and the classifier badly needs them
     3. Single-char prefix/surfix substitution at short lengths
+
+    Under `marker_policy="separate"`, marker-toggle pairs (`hello` vs
+    `\u0120hello`) are additionally mined as an explicit negative sub-stream,
+    since that policy defines them as non-variants
 
     Returns a shuffled, deduplicated subsample up to `cfg.n_hard_negatives`
 
@@ -388,9 +423,71 @@ def hard_negatives(
         seen.add(key)
         pool.append(key)
 
+    # Under "separate", marker toggles are non-variants by definition; teach
+    # the classifier so explicitly
+    if tf.marker_policy == "separate":
+        for key in _marker_toggle_negatives(tf, positives, seen):
+            seen.add(key)
+            pool.append(key)
+
     rng.shuffle(pool)
 
     return pool[:target]
+
+
+def _marker_toggle_negatives(
+    tf: TokenFeatures,
+    positives: set[tuple[int, int]],
+    already_seen: set[tuple[int, int]],
+    cap: int = 4_000,
+) -> list[tuple[int, int]]:
+    """Mine marker-toggle pairs as negatives (marker_policy="separate" only).
+
+    For each token, look up its marker-toggled counterpart in the vocabulary
+    and emit the pair. Under the "separate" policy these are the canonical
+    confusable: identical surface forms distinguished only by the marker
+
+    Parameters
+    ----------
+    tf : TokenFeatures
+        Precomputed per-token cache
+    positives : set[tuple[int, int]]
+        Positive pairs to exclude
+    already_seen : set[tuple[int, int]]
+        Pairs already sampled for negatives
+    cap : int
+        Maximum number of pairs to emit
+
+    Returns
+    -------
+    list[tuple[int, int]]
+        List of `(i, j)` index pairs with `i < j`
+    """
+    view = tf.view
+    if not view.prefix_marker:
+        return []
+
+    vi = _vocab_index(view)
+    out = []
+    emitted = set()
+
+    for i, t in enumerate(view.vocab):
+        for p in _toggle_marker(t, view):
+            j = vi.get(p)
+            if j is None or j == i:
+                continue
+
+            key = (min(i, j), max(i, j))
+            if key in positives or key in already_seen or key in emitted:
+                continue
+
+            emitted.add(key)
+            out.append(key)
+
+        if len(out) >= cap:
+            break
+
+    return out
 
 
 def _explicit_edit_negatives(
@@ -581,11 +678,18 @@ def easy_negatives(
             continue
 
         # Reject pairs that are too similar (length within 1 char and share
-        # script + marker). Those belong to the hard-neg pool
+        # script + stratum). Those belong to the hard-neg pool. Under the
+        # "merge" policy, marker presence does not separate strata, so the
+        # marker check is skipped
+        same_marker_stratum = (
+            tf.has_marker[i] == tf.has_marker[j]
+            if tf.marker_policy == "separate"
+            else True
+        )
         if (
             abs(int(tf.compare_len[i]) - int(tf.compare_len[j])) <= 1
             and tf.script[i] == tf.script[j]
-            and tf.has_marker[i] == tf.has_marker[j]
+            and same_marker_stratum
         ):
             continue
 
@@ -603,10 +707,11 @@ def build_dataset(
 
     Output schema (Parquet):
 
-        model_name : str
-        family     : str
-        token_a    : str
-        token_b    : str
+        model_name    : str
+        family        : str
+        marker_policy : str     ("merge" | "separate")
+        token_a       : str
+        token_b       : str
         id_a       : int32
         id_b       : int32
         label      : int8       (1 positive, 0 negative)
@@ -631,7 +736,7 @@ def build_dataset(
     rng = random.Random(cfg.seed)
 
     view = inspect(model_name, tokenizer_kwargs=tokenizer_kwargs)
-    tf = TokenFeatures.from_view(view)
+    tf = TokenFeatures.from_view(view, marker_policy=cfg.marker_policy)
 
     pos = synthetic_positives(tf, cfg, rng)
     pos_set = set(pos)
@@ -653,6 +758,7 @@ def build_dataset(
     cols = {
         "model_name": pa.array([model_name] * n, type=pa.string()),
         "family": pa.array([view.family] * n, type=pa.string()),
+        "marker_policy": pa.array([cfg.marker_policy] * n, type=pa.string()),
         "token_a": pa.array([view.vocab[i] for i, *_ in rows]),
         "token_b": pa.array([view.vocab[j] for _, j, *_ in rows]),
         "id_a": pa.array([view.ids[i] for i, *_ in rows], type=pa.int32()),
@@ -693,6 +799,43 @@ def read_dataset(path) -> pa.Table:
         Training dataset
     """
     return pq.read_table(str(path))
+
+
+def dataset_marker_policy(table: pa.Table) -> str:
+    """Return the marker policy recorded in a dataset table.
+
+    Parameters
+    ----------
+    table : pa.Table
+        Table written by `write_dataset`
+
+    Returns
+    -------
+    str
+        The single marker policy in the table
+
+    Raises
+    ------
+    ValueError
+        If the table mixes multiple marker policies
+    """
+    # If loading a table without a `marker_policy`, use default
+    if "marker_policy" not in table.column_names:
+        return DEFAULT_MARKER_POLICY
+
+    vals = set(table.column("marker_policy").unique().to_pylist())
+    vals.discard(None)
+
+    if not vals:
+        return DEFAULT_MARKER_POLICY
+
+    if len(vals) > 1:
+        raise ValueError(
+            f"dataset mixes marker policies: {sorted(vals)}. Train separate "
+            "models per policy."
+        )
+
+    return vals.pop()
 
 
 def feature_matrix(table: pa.Table) -> tuple[np.ndarray, np.ndarray]:
