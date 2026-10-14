@@ -1,8 +1,8 @@
 """Thread-pool parallelism for the cluster-pass scoring loop."""
 
 import os
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from typing import Iterable, Iterator
 
 import numpy as np
 

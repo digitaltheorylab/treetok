@@ -6,8 +6,8 @@ os.environ.setdefault("TRANSFORMERS_NO_TORCH", "1")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 import numpy as np
 from transformers import AutoTokenizer
@@ -109,14 +109,12 @@ def inspect(model_name: str, **tokenizer_kwargs: dict | None) -> TokenizerView:
     has_marker = np.zeros(len(vocab), dtype=bool)
     stripped = [""] * len(vocab)
 
-    if prefix_marker and marker_kind == "leading_space":
-        for i, t in enumerate(vocab):
-            if t.startswith(prefix_marker) and len(t) > len(prefix_marker):
-                has_marker[i] = True
-                stripped[i] = t[len(prefix_marker) :]
-            else:
-                stripped[i] = t
-    elif prefix_marker and marker_kind == "continuation":
+    if (
+        prefix_marker
+        and marker_kind == "leading_space"
+        or prefix_marker
+        and marker_kind == "continuation"
+    ):
         for i, t in enumerate(vocab):
             if t.startswith(prefix_marker) and len(t) > len(prefix_marker):
                 has_marker[i] = True
@@ -129,7 +127,7 @@ def inspect(model_name: str, **tokenizer_kwargs: dict | None) -> TokenizerView:
     family = _detect_family(tokenizer, prefix_marker, marker_kind)
     decoded = _decode_each(tokenizer, vocab)
 
-    special_token_ids = set(int(i) for i in tokenizer.all_special_ids)
+    special_token_ids = {int(i) for i in tokenizer.all_special_ids}
     added_token_ids = _added_token_ids(tokenizer)
 
     return TokenizerView(
@@ -273,7 +271,7 @@ def _decode_each(tokenizer, vocab: list[str]) -> list[str]:
 
         try:
             d = convert([t])
-        except Exception:
+        except Exception:  # noqa
             d = t
 
         if not isinstance(d, str):
@@ -301,7 +299,7 @@ def _added_token_ids(tokenizer) -> set[int]:
 
     decoder = getattr(tokenizer, "added_tokens_decoder", None)
     if isinstance(decoder, dict):
-        ids.update(i for i in decoder.keys())
+        ids.update(i for i in decoder)
 
     encoder = getattr(tokenizer, "added_tokens_encoder", None)
     if isinstance(encoder, dict):

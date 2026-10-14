@@ -293,7 +293,7 @@ def iter_pair_batches(
                 q_max = _length_aware_max_dist(L)
                 if q_max == 0:
                     continue
-                for off in range(0, q_max + 1):
+                for off in range(q_max + 1):
                     other_L = L + off
                     c_members = length_buckets.get(other_L)
                     if not c_members:

@@ -16,11 +16,11 @@ from .model import MergeClassifier
 
 __all__ = [
     "DEFAULT_MARKER_POLICY",
-    "DatasetConfig",
     "MARKER_POLICIES",
+    "DatasetConfig",
     "MergeClassifier",
-    "TreetokFeaturizer",
     "TokenizerView",
+    "TreetokFeaturizer",
     "build_dataset",
     "cluster_vocab",
     "dataset_marker_policy",
